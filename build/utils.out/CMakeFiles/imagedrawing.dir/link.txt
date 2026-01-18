@@ -1,0 +1,2 @@
+/home/locle/luckfox/luckfox-pico/tools/linux/toolchain/arm-rockchip830-linux-uclibcgnueabihf/bin/arm-rockchip830-linux-uclibcgnueabihf-ar qc libimagedrawing.a CMakeFiles/imagedrawing.dir/image_drawing.c.o
+/home/locle/luckfox/luckfox-pico/tools/linux/toolchain/arm-rockchip830-linux-uclibcgnueabihf/bin/arm-rockchip830-linux-uclibcgnueabihf-ranlib libimagedrawing.a

@@ -1,0 +1,2 @@
+/home/locle/luckfox/luckfox-pico/tools/linux/toolchain/arm-rockchip830-linux-uclibcgnueabihf/bin/arm-rockchip830-linux-uclibcgnueabihf-ar qc libGUI.a CMakeFiles/GUI.dir/GUI_Paint.cc.o
+/home/locle/luckfox/luckfox-pico/tools/linux/toolchain/arm-rockchip830-linux-uclibcgnueabihf/bin/arm-rockchip830-linux-uclibcgnueabihf-ranlib libGUI.a
