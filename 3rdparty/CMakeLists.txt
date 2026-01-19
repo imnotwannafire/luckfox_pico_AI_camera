@@ -2,19 +2,15 @@ cmake_minimum_required(VERSION 3.15)
 
 project(rknn_model_zoo_3rdparty_libs)
 
-set (TARGET_LIB_ARCH armhf)
-if(${LIBC_TYPE} STREQUAL "uclibc")
-    set (TARGET_LIB_ARCH ${TARGET_LIB_ARCH}_uclibc)
-endif()
+set(TARGET_SOC "rv1106")
+set (TARGET_LIB_ARCH armhf_uclibc)
 
-# stb image
-set(STB_PATH ${CMAKE_CURRENT_SOURCE_DIR}/stb_image)
-set(STB_INCLUDES ${STB_PATH} PARENT_SCOPE)
-
-# jpeg turbo
-set(JPEG_PATH ${CMAKE_CURRENT_SOURCE_DIR}/jpeg_turbo)
-set(LIBJPEG ${JPEG_PATH}/${CMAKE_SYSTEM_NAME}/${TARGET_LIB_ARCH}/libturbojpeg.a PARENT_SCOPE)
-set(LIBJPEG_INCLUDES ${JPEG_PATH}/include PARENT_SCOPE)
+# rknn runtime
+set(RKNN_PATH ${CMAKE_CURRENT_SOURCE_DIR}/rknpu2)
+set(LIBRKNNRT ${RKNN_PATH}/${CMAKE_SYSTEM_NAME}/armhf-uclibc/librknnmrt.so)
+set(LIBRKNNRT_INCLUDES ${RKNN_PATH}/include PARENT_SCOPE)
+install(PROGRAMS ${LIBRKNNRT} DESTINATION lib)
+set(LIBRKNNRT ${LIBRKNNRT} PARENT_SCOPE)
 
 # rga
 set(RGA_PATH ${CMAKE_CURRENT_SOURCE_DIR}/librga)
