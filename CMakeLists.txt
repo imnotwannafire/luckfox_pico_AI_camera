@@ -10,6 +10,12 @@ endif()
 
 set(SDK_PATH $ENV{LUCKFOX_SDK_PATH})
 set(GLIBC_COMPILER $ENV{GLIBC_COMPILER})
+set(CMAKE_SYSROOT ${SDK_PATH}/sysdrv/source/buildroot/buildroot-2023.02.6/output/host/arm-buildroot-linux-uclibcgnueabihf/sysroot)
+# Configure PkgConfig for cross-compilation sysroot
+set(ENV{PKG_CONFIG_SYSROOT_DIR} ${CMAKE_SYSROOT})
+set(ENV{PKG_CONFIG_LIBDIR} ${CMAKE_SYSROOT}/usr/lib/pkgconfig:${CMAKE_SYSROOT}/usr/share/pkgconfig)
+set(ENV{PKG_CONFIG_PATH} ${CMAKE_SYSROOT}/usr/lib/pkgconfig:${CMAKE_SYSROOT}/usr/share/pkgconfig)
+
 if(${LIBC_TYPE} STREQUAL "uclibc")
     if (NOT SDK_PATH)
         message(WARNING "Please Set Luckfox-pico SDK Path. Such as:export LUCKFOX_SDK_PATH=/home/user/luckfox-pico")
@@ -48,6 +54,22 @@ set(CMAKE_INSTALL_RPATH "$ORIGIN/lib")
 add_definitions(-DRV1106_1103)
 
 link_directories(${CMAKE_CURRENT_SOURCE_DIR}/lib/${LIBC_TYPE})
+#ffmpeg
+# FFmpeg includes and links
+include_directories(${CMAKE_SYSROOT}/usr/include)
+link_directories(${CMAKE_SYSROOT}/usr/lib)
+# Find and link FFmpeg (optional, but good for portability)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libavutil libswscale)
+if(FFMPEG_FOUND)
+    message(STATUS "FFmpeg found via PkgConfig")
+    # Use imported target for clean linking (includes libs and includes)
+else()
+    message(WARNING "PkgConfig didn't find FFmpeg; using manual fallback")
+    # Manual fallback: set libs explicitly
+    include_directories(${CMAKE_SYSROOT}/usr/include)
+    set(FFMPEG_LIBRARIES avformat avcodec avutil)
+endif()
 
 #Opencv 4
 set(OpenCV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/lib/${LIBC_TYPE}/lib/cmake/opencv4")
@@ -59,7 +81,7 @@ find_package(Threads REQUIRED)
 set(SRC_DIR "${EXAMPLE_DIR}/src")
 file(GLOB SRC_FILES "${SRC_DIR}/*.cc")
 add_executable(${PROJECT_NAME} ${SRC_FILES})
-
+message(STATUS "Building executable: ${PROJECT_NAME}")
 add_compile_options(-g -Wall
                     -DISP_HW_V30 -DRKPLATFORM=ON -DARCH64=OFF
                     -DROCKIVA -DUAPI2
@@ -81,7 +103,7 @@ if(${LIBC_TYPE} STREQUAL "uclibc")
                         pthread
                         rtsp
                         rga
-                        )
+                        ${FFMPEG_LIBRARIES})
 elseif(${LIBC_TYPE} STREQUAL "glibc")
     target_link_libraries(${PROJECT_NAME}
                         ${OpenCV_LIBS}
@@ -100,7 +122,7 @@ elseif(${LIBC_TYPE} STREQUAL "glibc")
                         rt
                         dl
                         rga
-                        )
+                        ${FFMPEG_LIBRARIES})
 endif()
 
 target_include_directories(${PROJECT_NAME} PRIVATE                        
