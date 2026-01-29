@@ -108,7 +108,7 @@ int venc_init(int chnId, int width, int height, RK_CODEC_ID_E enType) {
 	}
 
 	stAttr.stVencAttr.enType = enType;
-	stAttr.stVencAttr.enPixelFormat = RK_FMT_YUV420SP;
+	stAttr.stVencAttr.enPixelFormat = RK_FMT_YUV420P;
 	if (enType == RK_VIDEO_ID_AVC)
 		stAttr.stVencAttr.u32Profile = H264E_PROFILE_HIGH;
 	stAttr.stVencAttr.u32PicWidth = width;

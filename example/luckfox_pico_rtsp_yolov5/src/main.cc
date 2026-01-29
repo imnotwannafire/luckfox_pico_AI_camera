@@ -193,11 +193,11 @@ int main(int argc, char *argv[]) {
     stFrame.u32PackCount = 1;
     
     // Initialize YOLOv5 model
-    // if (init_yolov5_model(model_path, &rknn_app_ctx) != 0) {
-    //     fprintf(stderr, "ERROR: Failed to initialize YOLOv5 model\n");
-    //     ret = -1;
-    //     return -1;;
-    // }
+    if (init_yolov5_model(model_path, &rknn_app_ctx) != 0) {
+        fprintf(stderr, "ERROR: Failed to initialize YOLOv5 model\n");
+        ret = -1;
+        return -1;;
+    }
     
     if (init_post_process() != 0) {
         fprintf(stderr, "ERROR: Failed to initialize post-processing\n");
@@ -375,14 +375,14 @@ int main(int argc, char *argv[]) {
     printf("✓ Video encoder channel started\n");
     
     // Allocate AI processing buffers
-    // temp_i420_buffer = (unsigned char *)malloc(width * height * 3 / 2);
-    // if (!temp_i420_buffer) {
-    //     fprintf(stderr, "ERROR: Failed to allocate temporary I420 buffer\n");
-    //     ret = -1;
-    //     return -1;;
-    // }
+    temp_i420_buffer = (unsigned char *)malloc(width * height * 3 / 2);
+    if (!temp_i420_buffer) {
+        fprintf(stderr, "ERROR: Failed to allocate temporary I420 buffer\n");
+        ret = -1;
+        return -1;;
+    }
     
-    // bgr_frame = new cv::Mat(height, width, CV_8UC3);
+    bgr_frame = new cv::Mat(height, width, CV_8UC3);
     
     printf("\n========================================\n");
     printf("Starting YOLOv5 object detection pipeline...\n");
@@ -432,102 +432,102 @@ int main(int argc, char *argv[]) {
                                width / 2);
                     }
                     
-                    // // *** YOLOV5 AI PROCESSING SECTION ***
-                    // // Step 3: Create stride-corrected I420 buffer for OpenCV
-                    // // Y plane
-                    // for (int i = 0; i < height; i++) {
-                    //     memcpy(temp_i420_buffer + i * width,
-                    //            data + i * vir_width,
-                    //            width);
-                    // }
+                    // *** YOLOV5 AI PROCESSING SECTION ***
+                    // Step 3: Create stride-corrected I420 buffer for OpenCV
+                    // Y plane
+                    for (int i = 0; i < height; i++) {
+                        memcpy(temp_i420_buffer + i * width,
+                               data + i * vir_width,
+                               width);
+                    }
                     
-                    // // U plane
-                    // int temp_u_offset = width * height;
-                    // for (int i = 0; i < height / 2; i++) {
-                    //     memcpy(temp_i420_buffer + temp_u_offset + i * (width / 2),
-                    //            data + u_offset + i * (vir_width / 2),
-                    //            width / 2);
-                    // }
+                    // U plane
+                    int temp_u_offset = width * height;
+                    for (int i = 0; i < height / 2; i++) {
+                        memcpy(temp_i420_buffer + temp_u_offset + i * (width / 2),
+                               data + u_offset + i * (vir_width / 2),
+                               width / 2);
+                    }
                     
-                    // // V plane
-                    // int temp_v_offset = temp_u_offset + (width * height / 4);
-                    // for (int i = 0; i < height / 2; i++) {
-                    //     memcpy(temp_i420_buffer + temp_v_offset + i * (width / 2),
-                    //            data + v_offset + i * (vir_width / 2),
-                    //            width / 2);
-                    // }
+                    // V plane
+                    int temp_v_offset = temp_u_offset + (width * height / 4);
+                    for (int i = 0; i < height / 2; i++) {
+                        memcpy(temp_i420_buffer + temp_v_offset + i * (width / 2),
+                               data + v_offset + i * (vir_width / 2),
+                               width / 2);
+                    }
                     
-                    // // Step 4: Convert I420 to BGR for AI processing
-                    // cv::Mat i420_mat(height + height/2, width, CV_8UC1, temp_i420_buffer);
-                    // cv::cvtColor(i420_mat, *bgr_frame, cv::COLOR_YUV2BGR_I420);
+                    // Step 4: Convert I420 to BGR for AI processing
+                    cv::Mat i420_mat(height + height/2, width, CV_8UC1, temp_i420_buffer);
+                    cv::cvtColor(i420_mat, *bgr_frame, cv::COLOR_YUV2BGR_I420);
                     
-                    // // Step 5: Apply letterbox preprocessing for YOLOv5
-                    // cv::Mat letterbox_image = letterbox(*bgr_frame, width, height);
+                    // Step 5: Apply letterbox preprocessing for YOLOv5
+                    cv::Mat letterbox_image = letterbox(*bgr_frame, width, height);
                     
-                    // // Step 6: Run YOLOv5 inference
-                    // memcpy(rknn_app_ctx.input_mems[0]->virt_addr, letterbox_image.data, 
-                    //        MODEL_WIDTH * MODEL_HEIGHT * 3);
-                    // inference_yolov5_model(&rknn_app_ctx, &od_results);
+                    // Step 6: Run YOLOv5 inference
+                    memcpy(rknn_app_ctx.input_mems[0]->virt_addr, letterbox_image.data, 
+                           MODEL_WIDTH * MODEL_HEIGHT * 3);
+                    inference_yolov5_model(&rknn_app_ctx, &od_results);
                     
                     // Step 7: Draw detection results with coordinate mapping
-                    // for (int i = 0; i < od_results.count; i++) {
-                    //     object_detect_result *det_result = &(od_results.results[i]);
+                    for (int i = 0; i < od_results.count; i++) {
+                        object_detect_result *det_result = &(od_results.results[i]);
                         
-                    //     // Get coordinates from letterbox space (640x640)
-                    //     int sX = (int)(det_result->box.left);
-                    //     int sY = (int)(det_result->box.top);
-                    //     int eX = (int)(det_result->box.right);
-                    //     int eY = (int)(det_result->box.bottom);
+                        // Get coordinates from letterbox space (640x640)
+                        int sX = (int)(det_result->box.left);
+                        int sY = (int)(det_result->box.top);
+                        int eX = (int)(det_result->box.right);
+                        int eY = (int)(det_result->box.bottom);
                         
-                    //     // Map coordinates back to original frame dimensions
-                    //     mapCoordinates(&sX, &sY);
-                    //     mapCoordinates(&eX, &eY);
+                        // Map coordinates back to original frame dimensions
+                        mapCoordinates(&sX, &sY);
+                        mapCoordinates(&eX, &eY);
                         
-                    //     // Clamp coordinates to frame bounds
-                    //     sX = std::max(0, std::min(sX, width-1));
-                    //     sY = std::max(0, std::min(sY, height-1));
-                    //     eX = std::max(0, std::min(eX, width-1));
-                    //     eY = std::max(0, std::min(eY, height-1));
+                        // Clamp coordinates to frame bounds
+                        sX = std::max(0, std::min(sX, width-1));
+                        sY = std::max(0, std::min(sY, height-1));
+                        eX = std::max(0, std::min(eX, width-1));
+                        eY = std::max(0, std::min(eY, height-1));
                         
-                    //     // Draw bounding box
-                    //     cv::rectangle(*bgr_frame, cv::Point(sX, sY), cv::Point(eX, eY), 
-                    //                   cv::Scalar(0, 255, 0), 3);
+                        // Draw bounding box
+                        cv::rectangle(*bgr_frame, cv::Point(sX, sY), cv::Point(eX, eY), 
+                                      cv::Scalar(0, 255, 0), 3);
                         
-                    //     // Draw label with confidence percentage
-                    //     snprintf(text_buffer, sizeof(text_buffer), "%s %.1f%%", 
-                    //             coco_cls_to_name(det_result->cls_id), 
-                    //             det_result->prop * 100);
-                    //     cv::putText(*bgr_frame, text_buffer, cv::Point(sX, sY - 8),
-                    //                 cv::FONT_HERSHEY_SIMPLEX, 1,
-                    //                 cv::Scalar(0, 255, 0), 2);
-                    // }
+                        // Draw label with confidence percentage
+                        snprintf(text_buffer, sizeof(text_buffer), "%s %.1f%%", 
+                                coco_cls_to_name(det_result->cls_id), 
+                                det_result->prop * 100);
+                        cv::putText(*bgr_frame, text_buffer, cv::Point(sX, sY - 8),
+                                    cv::FONT_HERSHEY_SIMPLEX, 1,
+                                    cv::Scalar(0, 255, 0), 2);
+                    }
                     
-                    // // Step 8: Convert annotated BGR back to I420
-                    // cv::cvtColor(*bgr_frame, i420_mat, cv::COLOR_BGR2YUV_I420);
+                    // Step 8: Convert annotated BGR back to I420
+                    cv::cvtColor(*bgr_frame, i420_mat, cv::COLOR_BGR2YUV_I420);
                     
-                    // // Step 9: Copy processed I420 back to VENC buffer with stride
-                    // // Y plane
-                    // for (int i = 0; i < height; i++) {
-                    //     memcpy(data + i * vir_width,
-                    //            temp_i420_buffer + i * width,
-                    //            width);
-                    // }
+                    // Step 9: Copy processed I420 back to VENC buffer with stride
+                    // Y plane
+                    for (int i = 0; i < height; i++) {
+                        memcpy(data + i * vir_width,
+                               temp_i420_buffer + i * width,
+                               width);
+                    }
                     
-                    // // U plane
-                    // int dst_u_offset = vir_width * vir_height;
-                    // for (int i = 0; i < height / 2; i++) {
-                    //     memcpy(data + dst_u_offset + i * (vir_width / 2),
-                    //            temp_i420_buffer + temp_u_offset + i * (width / 2),
-                    //            width / 2);
-                    // }
+                    // U plane
+                    int dst_u_offset = vir_width * vir_height;
+                    for (int i = 0; i < height / 2; i++) {
+                        memcpy(data + dst_u_offset + i * (vir_width / 2),
+                               temp_i420_buffer + temp_u_offset + i * (width / 2),
+                               width / 2);
+                    }
                     
-                    // // V plane
-                    // int dst_v_offset = dst_u_offset + (vir_width * vir_height / 4);
-                    // for (int i = 0; i < height / 2; i++) {
-                    //     memcpy(data + dst_v_offset + i * (vir_width / 2),
-                    //            temp_i420_buffer + temp_v_offset + i * (width / 2),
-                    //            width / 2);
-                    // }
+                    // V plane
+                    int dst_v_offset = dst_u_offset + (vir_width * vir_height / 4);
+                    for (int i = 0; i < height / 2; i++) {
+                        memcpy(data + dst_v_offset + i * (vir_width / 2),
+                               temp_i420_buffer + temp_v_offset + i * (width / 2),
+                               width / 2);
+                    }
                     // *** END YOLOV5 PROCESSING ***
                     
                     // Step 10: Hardware encoding (unchanged from working RTSP relay)
@@ -679,9 +679,9 @@ int main(int argc, char *argv[]) {
     printf("✓ Rockchip MPI system exited\n");
     
     // // Release YOLOv5 model
-    // release_yolov5_model(&rknn_app_ctx);
-    // deinit_post_process();
-    // printf("✓ YOLOv5 model released\n");
+    release_yolov5_model(&rknn_app_ctx);
+    deinit_post_process();
+    printf("✓ YOLOv5 model released\n");
     
     printf("\nCleanup complete. Exiting.\n");
     
