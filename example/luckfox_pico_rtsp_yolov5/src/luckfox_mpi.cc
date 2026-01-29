@@ -89,7 +89,7 @@ int vi_chn_init(int channelId, int width, int height) {
 }
 
 int venc_init(int chnId, int width, int height, RK_CODEC_ID_E enType) {
-	printf("%s\n",__func__);
+	printf("========%s========\n", __func__);
 	VENC_RECV_PIC_PARAM_S stRecvParam;
 	VENC_CHN_ATTR_S stAttr;
 	memset(&stAttr, 0, sizeof(VENC_CHN_ATTR_S));
@@ -97,7 +97,7 @@ int venc_init(int chnId, int width, int height, RK_CODEC_ID_E enType) {
 	if (enType == RK_VIDEO_ID_AVC) {
 		stAttr.stRcAttr.enRcMode = VENC_RC_MODE_H264CBR;
 		stAttr.stRcAttr.stH264Cbr.u32BitRate = 10 * 1024;
-		stAttr.stRcAttr.stH264Cbr.u32Gop = 1;
+		stAttr.stRcAttr.stH264Cbr.u32Gop = 60;
 	} else if (enType == RK_VIDEO_ID_HEVC) {
 		stAttr.stRcAttr.enRcMode = VENC_RC_MODE_H265CBR;
 		stAttr.stRcAttr.stH265Cbr.u32BitRate = 10 * 1024;
@@ -108,7 +108,7 @@ int venc_init(int chnId, int width, int height, RK_CODEC_ID_E enType) {
 	}
 
 	stAttr.stVencAttr.enType = enType;
-	stAttr.stVencAttr.enPixelFormat = RK_FMT_RGB888;
+	stAttr.stVencAttr.enPixelFormat = RK_FMT_YUV420SP;
 	if (enType == RK_VIDEO_ID_AVC)
 		stAttr.stVencAttr.u32Profile = H264E_PROFILE_HIGH;
 	stAttr.stVencAttr.u32PicWidth = width;
