@@ -52,7 +52,7 @@ void verify_pool_config_structure() {
 #define MODEL_HEIGHT 640
 
 // RTSP input URL
-#define RTSP_INPUT_URL "rtsp://220.254.72.200/Src/MediaInput/h264/stream_2"
+#define RTSP_INPUT_URL "rtsp://220.254.72.200/Src/MediaInput/h264/stream_1"
 
 // Global flag for graceful shutdown
 static volatile bool g_running = true;
