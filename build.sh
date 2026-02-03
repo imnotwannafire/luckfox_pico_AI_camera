@@ -33,7 +33,6 @@ select opt in "${libc_options[@]}"; do
 done
 
 options=(
-	"luckfox_pico_rtsp_retinaface_osd"
 	"luckfox_pico_rtsp_yolov5")
 
 PS3="Enter your choice [1-${#options[@]}]: "
