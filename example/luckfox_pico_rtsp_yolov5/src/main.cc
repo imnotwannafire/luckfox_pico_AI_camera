@@ -32,19 +32,6 @@ extern "C" {
 #include <libswscale/swscale.h>
 #include <libavutil/imgutils.h>
 }
-void verify_pool_config_structure() {
-    MB_POOL_CONFIG_S test;
-    memset(&test, 0, sizeof(test));
-    
-    test.u64MBSize = 0x1234567890ABCDEFULL;
-    test.u32MBCnt = 0x12345678;
-    
-    printf("Structure verification:\n");
-    printf("u64MBSize offset: %zu\n", offsetof(MB_POOL_CONFIG_S, u64MBSize));
-    printf("u32MBCnt offset: %zu\n", offsetof(MB_POOL_CONFIG_S, u32MBCnt));
-    printf("u64MBSize value: 0x%lx\n", test.u64MBSize);
-    printf("u32MBCnt value: 0x%x\n", test.u32MBCnt);
-}
 
 // Hardware alignment and AI model constants
 #define RK_ALIGN_16(x) (((x) + 15) & (~15))
@@ -78,10 +65,10 @@ uint64_t get_time_us() {
  * Maintains aspect ratio while scaling to 640x640 model input
  * Essential for accurate object detection without distortion
  */
-cv::Mat letterbox(cv::Mat input, int src_width, int src_height) {
+void letterbox(cv::Mat& input, cv::Mat& output, int src_width, int src_height) {
     float scaleX = (float)MODEL_WIDTH / (float)src_width;
     float scaleY = (float)MODEL_HEIGHT / (float)src_height;
-    g_scale = std::min(scaleX, scaleY);  // Use smaller scale to maintain aspect ratio
+    g_scale = std::min(scaleX, scaleY);
     
     int inputWidth = (int)((float)src_width * g_scale);
     int inputHeight = (int)((float)src_height * g_scale);
@@ -92,14 +79,10 @@ cv::Mat letterbox(cv::Mat input, int src_width, int src_height) {
     cv::Mat inputScale;
     cv::resize(input, inputScale, cv::Size(inputWidth, inputHeight), 0, 0, cv::INTER_LINEAR);
     
-    // Create 640x640 black canvas
-    cv::Mat letterboxImage(MODEL_HEIGHT, MODEL_WIDTH, CV_8UC3, cv::Scalar(0, 0, 0));
+    output.setTo(cv::Scalar(0, 0, 0));  // Reuse existing buffer
     
-    // Copy scaled image to center of canvas
     cv::Rect roi(g_leftPadding, g_topPadding, inputWidth, inputHeight);
-    inputScale.copyTo(letterboxImage(roi));
-
-    return letterboxImage;
+    inputScale.copyTo(output(roi));
 }
 
 /**
@@ -125,7 +108,7 @@ int main(int argc, char *argv[]) {
     // ========================================
     RK_S32 s32Ret = 0;
     int ret = 0;
-	verify_pool_config_structure();
+    cv::Mat letterbox_output(MODEL_HEIGHT, MODEL_WIDTH, CV_8UC3);
     
     // YOLOv5 model variables
     rknn_app_context_t rknn_app_ctx;
@@ -462,10 +445,10 @@ int main(int argc, char *argv[]) {
                     cv::cvtColor(i420_mat, *bgr_frame, cv::COLOR_YUV2BGR_I420);
                     
                     // Step 5: Apply letterbox preprocessing for YOLOv5
-                    cv::Mat letterbox_image = letterbox(*bgr_frame, width, height);
+                    letterbox(*bgr_frame, letterbox_output, width, height);
                     
                     // Step 6: Run YOLOv5 inference
-                    memcpy(rknn_app_ctx.input_mems[0]->virt_addr, letterbox_image.data, 
+                    memcpy(rknn_app_ctx.input_mems[0]->virt_addr, letterbox_output.data, 
                            MODEL_WIDTH * MODEL_HEIGHT * 3);
                     inference_yolov5_model(&rknn_app_ctx, &od_results);
                     
