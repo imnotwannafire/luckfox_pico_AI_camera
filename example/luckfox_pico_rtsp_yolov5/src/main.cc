@@ -43,6 +43,7 @@ object_detect_result_list od_results;
 rtsp_demo_handle g_rtsplive = NULL;
 rtsp_session_handle g_rtsp_session = NULL;
 
+
 /**
  * Render text labels using OpenCV on small regions
  * Much faster than full-frame BGR conversion
@@ -582,18 +583,31 @@ int main(int argc, char *argv[]) {
                     }
                     
                     // 4. AI processing (convert to BGR only for inference)
-                    cv::Mat i420_mat(height + height/2, width, CV_8UC1, temp_i420_buffer);
-                    cv::cvtColor(i420_mat, *bgr_frame, cv::COLOR_YUV2BGR_I420);
+                    static int ai_frame_counter = 0;
+                    static object_detect_result_list cached_detections;
+                    static bool cache_initialized = false;
                     
-                    letterbox(*bgr_frame, letterbox_output, width, height);
+                    ai_frame_counter++;
+                    if (ai_frame_counter % 3 == 0) {
+                        cv::Mat i420_mat(height + height/2, width, CV_8UC1, temp_i420_buffer);
+                        cv::cvtColor(i420_mat, *bgr_frame, cv::COLOR_YUV2BGR_I420);
                     
-                    // 5. RKNN inference
-                    memcpy(rknn_app_ctx.input_mems[0]->virt_addr, letterbox_output.data, 
+                        letterbox(*bgr_frame, letterbox_output, width, height);
+                    
+                        // 5. RKNN inference
+                        memcpy(rknn_app_ctx.input_mems[0]->virt_addr, letterbox_output.data, 
                            MODEL_WIDTH * MODEL_HEIGHT * 3);
-                    memset(&od_results, 0, sizeof(object_detect_result_list));
+                        memset(&od_results, 0, sizeof(object_detect_result_list));
       
-                    inference_yolov5_model(&rknn_app_ctx, &od_results);
-                    
+                        inference_yolov5_model(&rknn_app_ctx, &od_results);
+
+                        // Cache results for next frame
+                        memcpy(&cached_detections, &od_results, sizeof(object_detect_result_list));
+                        cache_initialized = true;
+                    } else if(cache_initialized) {
+                        // Skip AI processing, reuse cached results
+                        memcpy(&od_results, &cached_detections, sizeof(object_detect_result_list));
+                    }
                     uint64_t ai_time = get_time_us() - frame_start;
                     
                     // 6. *** OPTIMIZED SOFTWARE OSD (Direct YUV Drawing) ***
