@@ -57,6 +57,10 @@ link_directories(${CMAKE_CURRENT_SOURCE_DIR}/lib/${LIBC_TYPE})
 #ffmpeg
 # FFmpeg includes and links
 include_directories(${CMAKE_SYSROOT}/usr/include)
+# Add Eigen and tracker include paths
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/eigen3/Eigen)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include/tracker)
+
 link_directories(${CMAKE_SYSROOT}/usr/lib)
 # Find and link FFmpeg (optional, but good for portability)
 find_package(PkgConfig REQUIRED)
@@ -79,13 +83,27 @@ set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
 set(SRC_DIR "${EXAMPLE_DIR}/src")
-file(GLOB SRC_FILES "${SRC_DIR}/*.cc")
-add_executable(${PROJECT_NAME} ${SRC_FILES})
+file(GLOB SRC_FILES "${SRC_DIR}/*.cc" "${SRC_DIR}/*.cpp")
+
+set(TRACKER_SRC_DIR "${EXAMPLE_DIR}/src/tracker")
+file(GLOB TRACKER_SRC_FILES 
+    "${TRACKER_SRC_DIR}/BYTETracker.cpp"
+    "${TRACKER_SRC_DIR}/STrack.cpp"
+    "${TRACKER_SRC_DIR}/kalmanFilter.cpp"
+    "${TRACKER_SRC_DIR}/lapjv.cpp"
+    "${TRACKER_SRC_DIR}/utils.cpp"
+)
+add_executable(${PROJECT_NAME} ${SRC_FILES} ${TRACKER_SRC_FILES})
 message(STATUS "Building executable: ${PROJECT_NAME}")
+add_definitions(-DEIGEN_DONT_VECTORIZE -DEIGEN_DISABLE_UNALIGNED_ARRAY_ASSERT -DEIGEN_MAX_ALIGN_BYTES=0)
 add_compile_options(-g -Wall
                     -DISP_HW_V30 -DRKPLATFORM=ON -DARCH64=OFF
                     -DROCKIVA -DUAPI2
-                    -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64 
+                    -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64
+                    # Eigen optimizations for embedded systems
+                    -DEIGEN_NO_DEBUG           # Remove runtime checks for speed
+                    -DEIGEN_DONT_PARALLELIZE   # Single-core optimization
+                    -DEIGEN_FAST_MATH          # Enable fast math in Eigen 
                     )
 
 set(CMAKE_EXE_LINKER_FLAGS  "${CMAKE_EXE_LINKER_FLAGS} -Wl,-rpath-link,${CMAKE_CURRENT_SOURCE_DIR}/lib:/usr/lib")
@@ -143,6 +161,8 @@ target_include_directories(${PROJECT_NAME} PRIVATE
                             ${CMAKE_CURRENT_SOURCE_DIR}/include/rkaiq/iq_parser
                             ${CMAKE_CURRENT_SOURCE_DIR}/include/rkaiq/iq_parser_v2
                             ${CMAKE_CURRENT_SOURCE_DIR}/include/rkaiq/smartIr
+                            ${EXAMPLE_DIR}/include/tracker
+                            ${EXAMPLE_DIR}/eigen3
                           )
 message(STATUS "model dir PATH: ${EXAMPLE_DIR}/model")
 
