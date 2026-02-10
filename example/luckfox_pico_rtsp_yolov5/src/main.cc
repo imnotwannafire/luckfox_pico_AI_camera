@@ -1,4 +1,3 @@
-
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -18,7 +17,6 @@
 
 #include "BYTETracker.h"
 #include "dataType.h"
-
 #include "rtsp_demo.h"
 #include "luckfox_mpi.h"
 #include "yolov5.h"
@@ -74,63 +72,56 @@ void draw_text_labels_hybrid(unsigned char *yuv_data, int width, int height, int
     if (!text || strlen(text) == 0) return;
     
     int baseline = 0;
-    cv::Size text_size = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, 0.6, 2, &baseline);
+    cv::Size text_size = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, 0.5, 2, &baseline);
     
-    int padding = 6;
+    int padding = 5;
     int label_w = text_size.width + padding * 2;
     int label_h = text_size.height + padding * 2;
     
     int text_x = x;
-    int text_y = (y > label_h + 5) ? (y - label_h - 2) : (y + 25);
+    int text_y = (y > label_h + 5) ? (y - label_h - 2) : (y + 20);
     
-    if (text_x + label_w > width) text_x = width - label_w;
-    if (text_x < 0) text_x = 0;
-    if (text_y + label_h > height) text_y = height - label_h;
-    if (text_y < 0) text_y = 0;
+    // Clamp to frame boundaries
+    text_x = std::max(0, std::min(text_x, width - label_w));
+    text_y = std::max(0, std::min(text_y, height - label_h));
     
     cv::Mat label_img(label_h, label_w, CV_8UC3, cv::Scalar(0, 0, 0));
-    
     cv::putText(label_img, text, cv::Point(padding, label_h - padding), 
-                cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 0), 2, cv::LINE_AA);
+                cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 2, cv::LINE_AA);
     
     unsigned char *y_plane = yuv_data;
     unsigned char *uv_plane = yuv_data + vir_width * height;
     
-    for (int row = 0; row < label_h; row++) {
-        if (text_y + row >= height) break;
-        
+    // Convert BGR to Y (luminance)
+    for (int row = 0; row < label_h && text_y + row < height; row++) {
         uint8_t *bgr_ptr = label_img.ptr<uint8_t>(row);
         int y_offset = (text_y + row) * vir_width + text_x;
         
-        for (int col = 0; col < label_w; col++) {
-            if (text_x + col >= width) break;
-            
+        for (int col = 0; col < label_w && text_x + col < width; col++) {
             uint8_t b = bgr_ptr[col * 3];
             uint8_t g = bgr_ptr[col * 3 + 1];
             uint8_t r = bgr_ptr[col * 3 + 2];
-            
-            uint8_t y_val = (uint8_t)(0.299f * r + 0.587f * g + 0.114f * b);
-            
-            y_plane[y_offset + col] = y_val;
+            y_plane[y_offset + col] = (uint8_t)(0.299f * r + 0.587f * g + 0.114f * b);
         }
     }
     
+    // Set UV to neutral for clean appearance
     int uv_start_y = text_y / 2;
-    int uv_end_y = (text_y + label_h) / 2;
+    int uv_end_y = std::min((text_y + label_h) / 2, height / 2);
     int uv_start_x = (text_x / 2) * 2;
     int uv_width = ((label_w + 1) / 2) * 2;
     
-    for (int uv_row = uv_start_y; uv_row < uv_end_y && uv_row < height / 2; uv_row++) {
+    for (int uv_row = uv_start_y; uv_row < uv_end_y; uv_row++) {
         int uv_offset = uv_row * vir_width + uv_start_x;
         for (int i = 0; i < uv_width && uv_start_x + i < vir_width; i += 2) {
-            uv_plane[uv_offset + i] = 128;
-            uv_plane[uv_offset + i + 1] = 128;
+            uv_plane[uv_offset + i] = 128;     // U neutral
+            uv_plane[uv_offset + i + 1] = 128; // V neutral
         }
     }
 }
 
 void signal_handler(int sig) {
-    printf("\nReceived signal %d, shutting down gracefully...\n", sig);
+    printf("\nShutting down gracefully...\n");
     g_running = false;
 }
 
@@ -168,24 +159,22 @@ void mapCoordinates(int *x, int *y) {
 
 void draw_bbox_i420_correct(unsigned char *data, int width, int height, int vir_width,
                            int x, int y, int w, int h, int thickness) {
-    if (!data || thickness <= 0) return;
-    if (x < 0 || y < 0 || w <= 0 || h <= 0) return;
+    if (!data || thickness <= 0 || x < 0 || y < 0 || w <= 0 || h <= 0) return;
     if (x >= width || y >= height) return;
     
-    if (x + w > width) w = width - x;
-    if (y + h > height) h = height - y;
+    w = std::min(w, width - x);
+    h = std::min(h, height - y);
     if (w < 10 || h < 10) return;
     
     thickness = std::min(thickness, std::min(w/4, h/4));
     
-    const uint8_t Y_GREEN = 150;
-    const uint8_t U_GREEN = 44;
-    const uint8_t V_GREEN = 21;
+    const uint8_t Y_GREEN = 150, U_GREEN = 44, V_GREEN = 21;
     
     unsigned char *y_plane = data;
     unsigned char *u_plane = data + vir_width * height;
     unsigned char *v_plane = data + vir_width * height + (vir_width * height / 4);
     
+    // Draw Y plane borders
     for (int t = 0; t < thickness; t++) {
         if (y + t < height) {
             memset(y_plane + (y + t) * vir_width + x, Y_GREEN, w);
@@ -197,71 +186,49 @@ void draw_bbox_i420_correct(unsigned char *data, int width, int height, int vir_
     
     for (int row = y; row < y + h && row < height; row++) {
         for (int t = 0; t < thickness; t++) {
-            if (x + t < width) {
-                y_plane[row * vir_width + x + t] = Y_GREEN;
-            }
+            if (x + t < width) y_plane[row * vir_width + x + t] = Y_GREEN;
             if (x + w - 1 - t >= 0 && x + w - 1 - t < width) {
                 y_plane[row * vir_width + x + w - 1 - t] = Y_GREEN;
             }
         }
     }
     
+    // Draw UV planes
     int uv_width = vir_width / 2;
     int uv_height = height / 2;
-    int uv_x = x / 2;
-    int uv_y = y / 2;
-    int uv_w = w / 2;
-    int uv_h = h / 2;
+    int uv_x = x / 2, uv_y = y / 2;
+    int uv_w = std::min(w / 2, uv_width - uv_x);
+    int uv_h = std::min(h / 2, uv_height - uv_y);
     int uv_thickness = std::max(1, thickness / 2);
     
-    if (uv_x + uv_w > uv_width) uv_w = uv_width - uv_x;
-    if (uv_y + uv_h > uv_height) uv_h = uv_height - uv_y;
-    
-    for (int t = 0; t < uv_thickness; t++) {
-        if (uv_y + t < uv_height) {
-            memset(u_plane + (uv_y + t) * uv_width + uv_x, U_GREEN, uv_w);
-        }
-        if (uv_y + uv_h - 1 - t >= 0 && uv_y + uv_h - 1 - t < uv_height) {
-            memset(u_plane + (uv_y + uv_h - 1 - t) * uv_width + uv_x, U_GREEN, uv_w);
-        }
-    }
-    
-    for (int row = uv_y; row < uv_y + uv_h && row < uv_height; row++) {
+    auto draw_uv_plane = [&](unsigned char* plane, uint8_t color) {
         for (int t = 0; t < uv_thickness; t++) {
-            if (uv_x + t < uv_width) {
-                u_plane[row * uv_width + uv_x + t] = U_GREEN;
+            if (uv_y + t < uv_height) {
+                memset(plane + (uv_y + t) * uv_width + uv_x, color, uv_w);
             }
-            if (uv_x + uv_w - 1 - t >= 0 && uv_x + uv_w - 1 - t < uv_width) {
-                u_plane[row * uv_width + uv_x + uv_w - 1 - t] = U_GREEN;
+            if (uv_y + uv_h - 1 - t >= 0 && uv_y + uv_h - 1 - t < uv_height) {
+                memset(plane + (uv_y + uv_h - 1 - t) * uv_width + uv_x, color, uv_w);
             }
         }
-    }
+        for (int row = uv_y; row < uv_y + uv_h && row < uv_height; row++) {
+            for (int t = 0; t < uv_thickness; t++) {
+                if (uv_x + t < uv_width) plane[row * uv_width + uv_x + t] = color;
+                if (uv_x + uv_w - 1 - t >= 0 && uv_x + uv_w - 1 - t < uv_width) {
+                    plane[row * uv_width + uv_x + uv_w - 1 - t] = color;
+                }
+            }
+        }
+    };
     
-    for (int t = 0; t < uv_thickness; t++) {
-        if (uv_y + t < uv_height) {
-            memset(v_plane + (uv_y + t) * uv_width + uv_x, V_GREEN, uv_w);
-        }
-        if (uv_y + uv_h - 1 - t >= 0 && uv_y + uv_h - 1 - t < uv_height) {
-            memset(v_plane + (uv_y + uv_h - 1 - t) * uv_width + uv_x, V_GREEN, uv_w);
-        }
-    }
-    
-    for (int row = uv_y; row < uv_y + uv_h && row < uv_height; row++) {
-        for (int t = 0; t < uv_thickness; t++) {
-            if (uv_x + t < uv_width) {
-                v_plane[row * uv_width + uv_x + t] = V_GREEN;
-            }
-            if (uv_x + uv_w - 1 - t >= 0 && uv_x + uv_w - 1 - t < uv_width) {
-                v_plane[row * uv_width + uv_x + uv_w - 1 - t] = V_GREEN;
-            }
-        }
-    }
+    draw_uv_plane(u_plane, U_GREEN);
+    draw_uv_plane(v_plane, V_GREEN);
 }
 
 static void *GetMediaBuffer(void *arg) {
     (void)arg;
     VENC_STREAM_S stFrame;
     stFrame.pstPack = (VENC_PACK_S *)malloc(sizeof(VENC_PACK_S));
+    if (!stFrame.pstPack) return NULL;
     stFrame.u32PackCount = 1;
 
     while (g_running) {
@@ -279,11 +246,10 @@ static void *GetMediaBuffer(void *arg) {
         usleep(10000);
     }
     
-    if (stFrame.pstPack) free(stFrame.pstPack);
+    free(stFrame.pstPack);
     return NULL;
 }
 
-// IMPROVED: Enhanced debugging and filtering
 std::vector<Object> convert_detections_to_tracker(
     const object_detect_result_list& od_results, 
     int width, int height) {
@@ -291,22 +257,19 @@ std::vector<Object> convert_detections_to_tracker(
     std::vector<Object> objects;
     objects.reserve(od_results.count);
     
-    int filtered_conf = 0, filtered_class = 0, filtered_geom = 0, filtered_size = 0;
-    
     for (int i = 0; i < od_results.count; i++) {
         const object_detect_result& det = od_results.results[i];
         
-        // LOWERED for debugging - increase to 0.35-0.45 for production
-        if (det.prop < 0.20f) { filtered_conf++; continue; }
-        if (det.cls_id < 0 || det.cls_id >= 80) { filtered_class++; continue; }
+        if (det.prop < 0.20f) continue;
+        if (det.cls_id < 0 || det.cls_id >= 80) continue;
         
         int sX = (int)(det.box.left);
         int sY = (int)(det.box.top);
         int eX = (int)(det.box.right);
         int eY = (int)(det.box.bottom);
         
-        if (sX >= eX || sY >= eY) { filtered_geom++; continue; }
-        if (sX < 0 || sY < 0 || eX >= MODEL_WIDTH || eY >= MODEL_HEIGHT) { filtered_geom++; continue; }
+        if (sX >= eX || sY >= eY) continue;
+        if (sX < 0 || sY < 0 || eX >= MODEL_WIDTH || eY >= MODEL_HEIGHT) continue;
         
         mapCoordinates(&sX, &sY);
         mapCoordinates(&eX, &eY);
@@ -319,24 +282,16 @@ std::vector<Object> convert_detections_to_tracker(
         int bbox_w = eX - sX;
         int bbox_h = eY - sY;
         
-        if (bbox_w <= 8 || bbox_h <= 8) { filtered_size++; continue; }
+        if (bbox_w <= 8 || bbox_h <= 8) continue;
         
         Object obj;
         obj.rect = cv::Rect_<float>(
-            static_cast<float>(sX),
-            static_cast<float>(sY),
-            static_cast<float>(bbox_w),
-            static_cast<float>(bbox_h)
+            static_cast<float>(sX), static_cast<float>(sY),
+            static_cast<float>(bbox_w), static_cast<float>(bbox_h)
         );
         obj.label = det.cls_id;
         obj.prob = det.prop;
         objects.push_back(obj);
-    }
-    
-    // Debug output (remove for production)
-    if (od_results.count > 0) {
-        printf("FILTER: Raw=%d → Used=%zu (conf=%d, class=%d, geom=%d, size=%d)\n",
-               od_results.count, objects.size(), filtered_conf, filtered_class, filtered_geom, filtered_size);
     }
     
     return objects;
@@ -361,7 +316,7 @@ int main(int argc, char *argv[]) {
     AVFormatContext *formatContext = NULL;
     AVCodecContext *codecContext = NULL;
     AVCodec *codec = NULL;
-    AVPacket packet;
+    AVPacket *packet = NULL;
     AVFrame *avframe = NULL;
     AVFrame *i420_frame = NULL;
     struct SwsContext *sws_ctx = NULL;
@@ -384,20 +339,18 @@ int main(int argc, char *argv[]) {
     memset(&stRecvParam, 0, sizeof(stRecvParam));
     
     printf("========================================\n");
-    printf("RTSP YOLOv5 + ByteTrack (Fixed Version)\n");
-    printf("Target: 12-15 FPS with object tracking\n");
+    printf("RTSP YOLOv5 + ByteTrack Object Tracking\n");
+    printf("Target: 12-15 FPS with smooth display\n");
     printf("========================================\n");
     
-    if (init_yolov5_model(model_path, &rknn_app_ctx) != 0) {
+    // Initialize YOLOv5
+    if (init_yolov5_model(model_path, &rknn_app_ctx) != 0 || init_post_process() != 0) {
         fprintf(stderr, "ERROR: Failed to initialize YOLOv5\n");
         return -1;
     }
-    if (init_post_process() != 0) {
-        fprintf(stderr, "ERROR: Failed to initialize post-processing\n");
-        return -1;
-    }
-    printf("✓ YOLOv5 model initialized\n");
+    printf("✓ YOLOv5 initialized\n");
     
+    // Initialize ByteTracker (fps=5 matches effective detection rate: 15fps/3)
     g_tracker = new BYTETracker(5, 15);
     if (!g_tracker) {
         fprintf(stderr, "ERROR: Failed to initialize ByteTracker\n");
@@ -405,28 +358,27 @@ int main(int argc, char *argv[]) {
     }
     printf("✓ ByteTracker initialized\n");
     
-    // RTSP setup (same as original)
+    // RTSP input setup
     avformat_network_init();
     av_dict_set(&opts, "rtsp_transport", "tcp", 0);
     av_dict_set(&opts, "max_delay", "500000", 0);
     av_dict_set(&opts, "stimeout", "5000000", 0);
     av_dict_set(&opts, "buffer_size", "1024000", 0);
     
-    printf("Connecting to: %s\n", RTSP_INPUT_URL);
     if (avformat_open_input(&formatContext, RTSP_INPUT_URL, NULL, &opts) != 0) {
         fprintf(stderr, "ERROR: Failed to open RTSP stream\n");
         av_dict_free(&opts);
         return -1;
     }
     av_dict_free(&opts);
-    printf("✓ Connected successfully\n");
     
     if (avformat_find_stream_info(formatContext, NULL) < 0) {
         fprintf(stderr, "ERROR: Failed to find stream information\n");
         return -1;
     }
-    printf("✓ Stream analysis complete\n");
+    printf("✓ RTSP connected\n");
     
+    // Find video stream
     for (unsigned int i = 0; i < formatContext->nb_streams; i++) {
         if (formatContext->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
             videoStreamIndex = i;
@@ -434,7 +386,7 @@ int main(int argc, char *argv[]) {
             height = formatContext->streams[i]->codecpar->height;
             vir_width = RK_ALIGN_16(width);
             vir_height = height;
-            printf("✓ Video stream: %dx%d (stride: %d)\n", width, height, vir_width);
+            printf("✓ Video: %dx%d (stride: %d)\n", width, height, vir_width);
             break;
         }
     }
@@ -444,6 +396,7 @@ int main(int argc, char *argv[]) {
         return -1;
     }
     
+    // Decoder setup
     codecContext = avcodec_alloc_context3(NULL);
     if (!codecContext) {
         fprintf(stderr, "ERROR: Failed to allocate codec context\n");
@@ -456,7 +409,6 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "ERROR: Decoder initialization failed\n");
         return -1;
     }
-    printf("✓ Video decoder initialized\n");
     
     sws_ctx = sws_getContext(
         codecContext->width, codecContext->height, codecContext->pix_fmt,
@@ -466,11 +418,13 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "ERROR: Failed to create SWS context\n");
         return -1;
     }
-    printf("✓ Format converter initialized\n");
+    printf("✓ Decoder initialized\n");
     
+    // Allocate frames
     avframe = av_frame_alloc();
     i420_frame = av_frame_alloc();
-    if (!avframe || !i420_frame) {
+    packet = av_packet_alloc();
+    if (!avframe || !i420_frame || !packet) {
         fprintf(stderr, "ERROR: Failed to allocate frames\n");
         return -1;
     }
@@ -483,14 +437,13 @@ int main(int argc, char *argv[]) {
         return -1;
     }
     
-    av_init_packet(&packet);
-    
+    // Initialize MPI system
     if (RK_MPI_SYS_Init() != RK_SUCCESS) {
         fprintf(stderr, "ERROR: RK_MPI_SYS_Init failed\n");
         return -1;
     }
-    printf("✓ MPI system initialized\n");
     
+    // Initialize VENC
     s32Ret = venc_init(0, width, height, RK_VIDEO_ID_AVC);
     if (s32Ret != RK_SUCCESS) {
         fprintf(stderr, "ERROR: VENC init failed: 0x%x\n", s32Ret);
@@ -498,29 +451,22 @@ int main(int argc, char *argv[]) {
     }
     printf("✓ VENC initialized\n");
     
+    // Create memory pool
     PoolCfg.u64MBSize = vir_width * vir_height * 3 / 2;
     PoolCfg.u32MBCnt = 3;
     PoolCfg.enAllocType = MB_ALLOC_TYPE_DMA;
     
     src_Pool = RK_MPI_MB_CreatePool(&PoolCfg);
-    if (src_Pool == MB_INVALID_POOLID) {
-        fprintf(stderr, "ERROR: Failed to create memory pool\n");
-        return -1;
-    }
-    
     src_Blk = RK_MPI_MB_GetMB(src_Pool, PoolCfg.u64MBSize, RK_TRUE);
-    if (src_Blk == MB_INVALID_HANDLE) {
-        fprintf(stderr, "ERROR: Failed to get memory block\n");
-        return -1;
-    }
-    
     data = (unsigned char *)RK_MPI_MB_Handle2VirAddr(src_Blk);
-    if (!data) {
-        fprintf(stderr, "ERROR: Failed to get virtual address\n");
+    
+    if (src_Pool == MB_INVALID_POOLID || src_Blk == MB_INVALID_HANDLE || !data) {
+        fprintf(stderr, "ERROR: Memory pool creation failed\n");
         return -1;
     }
-    printf("✓ Memory pool created (%lu bytes)\n", PoolCfg.u64MBSize);
+    printf("✓ Memory pool created\n");
     
+    // Configure frame structure
     h264_frame.stVFrame.u32Width = width;
     h264_frame.stVFrame.u32Height = height;
     h264_frame.stVFrame.u32VirWidth = vir_width;
@@ -529,15 +475,11 @@ int main(int argc, char *argv[]) {
     h264_frame.stVFrame.u32FrameFlag = 160;
     h264_frame.stVFrame.pMbBlk = src_Blk;
     
+    // RTSP server setup
     g_rtsplive = create_rtsp_demo(554);
-    if (!g_rtsplive) {
-        fprintf(stderr, "ERROR: Failed to create RTSP demo\n");
-        return -1;
-    }
-    
     g_rtsp_session = rtsp_new_session(g_rtsplive, "/live/0");
-    if (!g_rtsp_session) {
-        fprintf(stderr, "ERROR: Failed to create RTSP session\n");
+    if (!g_rtsplive || !g_rtsp_session) {
+        fprintf(stderr, "ERROR: RTSP server initialization failed\n");
         return -1;
     }
     
@@ -548,42 +490,38 @@ int main(int argc, char *argv[]) {
     stRecvParam.s32RecvPicNum = -1;
     s32Ret = RK_MPI_VENC_StartRecvFrame(0, &stRecvParam);
     if (s32Ret != RK_SUCCESS) {
-        fprintf(stderr, "ERROR: Failed to start VENC receiving: 0x%x\n", s32Ret);
+        fprintf(stderr, "ERROR: Failed to start VENC: 0x%x\n", s32Ret);
         return -1;
     }
-    printf("✓ Video encoder started\n");
     
+    // Start streaming thread
     pthread_t stream_thread;
     if (pthread_create(&stream_thread, NULL, GetMediaBuffer, NULL) != 0) {
         fprintf(stderr, "ERROR: Failed to create streaming thread\n");
         return -1;
     }
     
+    // Allocate processing buffers
     temp_i420_buffer = (unsigned char *)malloc(width * height * 3 / 2);
-    if (!temp_i420_buffer) {
-        fprintf(stderr, "ERROR: Failed to allocate temporary buffer\n");
+    bgr_frame = new cv::Mat(height, width, CV_8UC3);
+    if (!temp_i420_buffer || !bgr_frame) {
+        fprintf(stderr, "ERROR: Failed to allocate processing buffers\n");
         return -1;
     }
     
-    bgr_frame = new cv::Mat(height, width, CV_8UC3);
-    
     printf("\n========================================\n");
-    printf("Starting Fixed Detection + Tracking Pipeline\n");
-    printf("Expected: 12-15 FPS with visible bounding boxes\n");
-    printf("Press Ctrl+C to stop\n");
+    printf("Processing started. Press Ctrl+C to stop.\n");
     printf("========================================\n\n");
     
     start_time = get_time_us();
     last_fps_time = start_time;
     
-    // *** MAIN PROCESSING LOOP (OPTIMIZED) ***
-    while (g_running && av_read_frame(formatContext, &packet) >= 0) {
-        if (packet.stream_index == videoStreamIndex) {
-            if (avcodec_send_packet(codecContext, &packet) == 0) {
+    // *** MAIN PROCESSING LOOP ***
+    while (g_running && av_read_frame(formatContext, packet) >= 0) {
+        if (packet->stream_index == videoStreamIndex) {
+            if (avcodec_send_packet(codecContext, packet) == 0) {
                 while (avcodec_receive_frame(codecContext, avframe) == 0) {
                     if (!data) continue;
-                    
-                    uint64_t frame_start = get_time_us();
                     
                     // 1. Decode RTSP to I420
                     sws_scale(sws_ctx,
@@ -595,38 +533,32 @@ int main(int argc, char *argv[]) {
                     // 2. Copy I420 to VENC buffer (always needed for display)
                     for (int i = 0; i < height; i++) {
                         memcpy(data + i * vir_width, 
-                               i420_frame->data[0] + i * i420_frame->linesize[0], 
-                               width);
+                               i420_frame->data[0] + i * i420_frame->linesize[0], width);
                     }
                     
                     int venc_u_offset = vir_width * vir_height;
                     for (int i = 0; i < height / 2; i++) {
                         memcpy(data + venc_u_offset + i * (vir_width / 2), 
-                               i420_frame->data[1] + i * i420_frame->linesize[1], 
-                               width / 2);
+                               i420_frame->data[1] + i * i420_frame->linesize[1], width / 2);
                     }
                     
                     int venc_v_offset = venc_u_offset + (vir_width * vir_height / 4);
                     for (int i = 0; i < height / 2; i++) {
                         memcpy(data + venc_v_offset + i * (vir_width / 2), 
-                               i420_frame->data[2] + i * i420_frame->linesize[2], 
-                               width / 2);
+                               i420_frame->data[2] + i * i420_frame->linesize[2], width / 2);
                     }
                     
-                    // *** OPTIMIZED AI PROCESSING ***
+                    // 3. AI processing (every 3rd frame for performance)
                     static int ai_frame_counter = 0;
-                    static bool tracking_initialized = false;
-                    
                     ai_frame_counter++;
                     bool run_inference = (ai_frame_counter % 3 == 0);
                     
                     uint64_t ai_start = get_time_us();
                     
                     if (run_inference) {
-                        // 3. MOVED INSIDE: Only copy/convert when running AI
+                        // Copy to AI buffer (remove stride)
                         for (int i = 0; i < height; i++) {
-                            memcpy(temp_i420_buffer + i * width,
-                                   data + i * vir_width, width);
+                            memcpy(temp_i420_buffer + i * width, data + i * vir_width, width);
                         }
                         
                         int temp_u_offset = width * height;
@@ -641,88 +573,64 @@ int main(int argc, char *argv[]) {
                                    data + venc_v_offset + i * (vir_width / 2), width / 2);
                         }
                         
-                        // 4. FIXED: RGB color conversion for YOLOv5
+                        // Convert to RGB for YOLOv5
                         cv::Mat i420_mat(height + height/2, width, CV_8UC1, temp_i420_buffer);
                         cv::cvtColor(i420_mat, *bgr_frame, cv::COLOR_YUV2RGB_I420);
-                        
-                        // Debug: Save first frame for verification
-                        static bool debug_saved = false;
-                        if (!debug_saved) {
-                            cv::imwrite("/userdata/debug_input.jpg", *bgr_frame);
-                            printf("DEBUG: Saved input frame to /userdata/debug_input.jpg\n");
-                            debug_saved = true;
-                        }
-                        
                         letterbox(*bgr_frame, letterbox_output, width, height);
                         
-                        // 5. RKNN inference
+                        // RKNN inference
                         memcpy(rknn_app_ctx.input_mems[0]->virt_addr, letterbox_output.data, 
                                MODEL_WIDTH * MODEL_HEIGHT * 3);
                         memset(&od_results, 0, sizeof(object_detect_result_list));
                         
                         int ret = inference_yolov5_model(&rknn_app_ctx, &od_results);
                         
-                        // Debug: Show detection results
-                        if (ai_frame_counter % 30 == 0 || od_results.count > 0) {
-                            printf("FRAME %d: Inference ret=%d, detections=%d\n", 
-                                   ai_frame_counter, ret, od_results.count);
-                        }
-                        
+                        // Update tracker with new detections
                         if (ret == 0 && g_tracker) {
                             std::vector<Object> tracker_objects = 
                                 convert_detections_to_tracker(od_results, width, height);
                             
-                            // Store detection labels for tracking
-                            std::vector<std::pair<cv::Rect_<float>, int>> detection_rects;
-                            for (const auto& obj : tracker_objects) {
-                                detection_rects.push_back({obj.rect, obj.label});
-                            }
-                            
-                            g_active_tracks = g_tracker->update(tracker_objects);
-                            printf("DEBUG: Tracker returned %zu active tracks\n", g_active_tracks.size());
-                            
-                            // Map track IDs to labels using spatial proximity
-                            for (const auto& track : g_active_tracks) {
-                                if (track.tlwh.size() < 4) continue;
+                            if (!tracker_objects.empty()) {
+                                g_active_tracks = g_tracker->update(tracker_objects);
                                 
-                                cv::Rect_<float> track_rect(track.tlwh[0], track.tlwh[1], 
-                                                            track.tlwh[2], track.tlwh[3]);
-                                
-                                float best_overlap = 0.0f;
-                                int best_label = -1;
-                                
-                                for (const auto& det_pair : detection_rects) {
-                                    cv::Rect_<float> intersection = track_rect & det_pair.first;
-                                    cv::Rect_<float> union_rect = track_rect | det_pair.first;
+                                // Map track IDs to class labels
+                                for (const auto& track : g_active_tracks) {
+                                    if (track.tlwh.size() < 4) continue;
                                     
-                                    if (union_rect.area() > 0) {
-                                        float overlap = intersection.area() / union_rect.area();
-                                        if (overlap > best_overlap) {
-                                            best_overlap = overlap;
-                                            best_label = det_pair.second;
+                                    cv::Rect_<float> track_rect(track.tlwh[0], track.tlwh[1], 
+                                                                track.tlwh[2], track.tlwh[3]);
+                                    
+                                    float best_overlap = 0.0f;
+                                    int best_label = -1;
+                                    
+                                    for (const auto& obj : tracker_objects) {
+                                        cv::Rect_<float> intersection = track_rect & obj.rect;
+                                        cv::Rect_<float> union_rect = track_rect | obj.rect;
+                                        
+                                        if (union_rect.area() > 0) {
+                                            float overlap = intersection.area() / union_rect.area();
+                                            if (overlap > best_overlap) {
+                                                best_overlap = overlap;
+                                                best_label = obj.label;
+                                            }
                                         }
+                                    }
+                                    
+                                    if (best_overlap > 0.3f && best_label >= 0) {
+                                        g_track_labels[track.track_id] = best_label;
                                     }
                                 }
                                 
-                                if (best_overlap > 0.3f && best_label >= 0) {
-                                    g_track_labels[track.track_id] = best_label;
-                                }
+                                cleanup_stale_labels(g_active_tracks);
                             }
-                            
-                            cleanup_stale_labels(g_active_tracks);
-                            tracking_initialized = true;
                         }
-                        
-                    } 
-                    // else if (tracking_initialized && g_tracker) {
-                    //     // Motion prediction only (no new detections)
-                    //     std::vector<Object> empty_detections;
-                    //     g_active_tracks = g_tracker->update(empty_detections);
-                    // }
+                    }
+                    // On skip frames, g_active_tracks persists from last inference
+                    // This creates smooth anti-flicker display
                     
                     uint64_t ai_time = get_time_us() - ai_start;
                     
-                    // 6. OSD Rendering
+                    // 4. OSD rendering (every frame using persistent g_active_tracks)
                     uint64_t osd_start = get_time_us();
                     
                     for (const auto& track : g_active_tracks) {
@@ -737,7 +645,7 @@ int main(int argc, char *argv[]) {
                         if (sX + bbox_w > width || sY + bbox_h > height) continue;
                         
                         draw_bbox_i420_correct(data, width, height, vir_width,
-                                              sX, sY, bbox_w, bbox_h, 3);
+                                              sX, sY, bbox_w, bbox_h, 2);
                         
                         char label[64];
                         auto label_it = g_track_labels.find(track.track_id);
@@ -750,8 +658,7 @@ int main(int argc, char *argv[]) {
                                     track.score * 100);
                         } else {
                             snprintf(label, sizeof(label), "ID:%d %.0f%%", 
-                                    track.track_id,
-                                    track.score * 100);
+                                    track.track_id, track.score * 100);
                         }
                         
                         draw_text_labels_hybrid(data, width, height, vir_width, sX, sY, label);
@@ -759,7 +666,7 @@ int main(int argc, char *argv[]) {
                     
                     uint64_t osd_time = get_time_us() - osd_start;
                     
-                    // 7. Send to VENC
+                    // 5. Send to encoder
                     RK_MPI_SYS_MmzFlushCache(src_Blk, RK_FALSE);
                     h264_frame.stVFrame.u32TimeRef = H264_TimeRef++;
                     h264_frame.stVFrame.u64PTS = TEST_COMM_GetNowUs();
@@ -768,16 +675,15 @@ int main(int argc, char *argv[]) {
                     if (s32Ret != RK_SUCCESS) {
                         consecutive_errors++;
                         if (consecutive_errors > 10) {
-                            printf("ERROR: Too many consecutive VENC errors, stopping\n");
+                            printf("ERROR: Too many VENC errors\n");
                             g_running = false;
                             break;
                         }
-                        printf("WARN: VENC_SendFrame failed: 0x%x\n", s32Ret);
                         continue;
                     }
                     consecutive_errors = 0;
                     
-                    // 8. Performance monitoring
+                    // 6. Performance monitoring
                     frame_count++;
                     fps_frame_count++;
                     
@@ -786,17 +692,12 @@ int main(int argc, char *argv[]) {
                         double fps = (double)fps_frame_count / 
                                     ((current_time - last_fps_time) / 1000000.0);
                         double total_elapsed = (current_time - start_time) / 1000000.0;
-                        double improvement = fps / 9.5;
-                        double ai_ms = ai_time / 1000.0;
-                        double osd_ms = osd_time / 1000.0;
                         
-                        const char* status = fps >= 12.0 ? "✓ TARGET" : "";
-                        const char* ai_status = run_inference ? "RUN" : "SKIP";
-                        
-                        printf("[%.1fs] FPS: %.2f | AI: %.1fms (%s) | OSD: %.1fms | Tracks: %lu | Gain: %.1fx %s\n",
-                               total_elapsed, fps, ai_ms, ai_status, osd_ms, 
-                               (unsigned long)g_active_tracks.size(),
-                               improvement, status);
+                        printf("[%.1fs] FPS: %.2f | AI: %.1fms (%s) | OSD: %.1fms | Tracks: %lu\n",
+                               total_elapsed, fps, ai_time / 1000.0,
+                               run_inference ? "RUN" : "SKIP",
+                               osd_time / 1000.0, 
+                               (unsigned long)g_active_tracks.size());
                         
                         fps_frame_count = 0;
                         last_fps_time = current_time;
@@ -804,7 +705,7 @@ int main(int argc, char *argv[]) {
                 }
             }
         }
-        av_packet_unref(&packet);
+        av_packet_unref(packet);
     }
     
     // Performance summary
@@ -813,27 +714,21 @@ int main(int argc, char *argv[]) {
     double avg_fps = total_time > 0 ? (double)frame_count / total_time : 0;
     
     printf("\n========================================\n");
-    printf("Final Performance Results\n");
+    printf("Performance Summary\n");
     printf("========================================\n");
-    printf("  Total frames: %lu\n", (unsigned long)frame_count);
-    printf("  Total time: %.2f seconds\n", total_time);
+    printf("  Frames processed: %lu\n", (unsigned long)frame_count);
+    printf("  Runtime: %.2f seconds\n", total_time);
     printf("  Average FPS: %.2f\n", avg_fps);
-    printf("  Baseline: 9.5 FPS\n");
-    printf("  Improvement: %.1fx faster (%.0f%% gain)\n", 
-           avg_fps / 9.5, (avg_fps / 9.5 - 1.0) * 100);
-    printf("  Target (12 FPS): %s\n", avg_fps >= 12.0 ? "ACHIEVED ✓" : "Close");
+    printf("  Performance gain: %.1fx vs baseline\n", avg_fps / 9.5);
     printf("========================================\n");
     
     // Cleanup
-    printf("\nCleaning up...\n");
+    printf("Cleaning up...\n");
     
     g_running = false;
     pthread_join(stream_thread, NULL);
     
-    if (g_tracker) {
-        delete g_tracker;
-        g_tracker = nullptr;
-    }
+    if (g_tracker) delete g_tracker;
     g_active_tracks.clear();
     g_track_labels.clear();
     
@@ -843,6 +738,7 @@ int main(int argc, char *argv[]) {
     if (bgr_frame) delete bgr_frame;
     if (temp_i420_buffer) free(temp_i420_buffer);
     
+    if (packet) av_packet_free(&packet);
     if (i420_frame) av_frame_free(&i420_frame);
     if (avframe) av_frame_free(&avframe);
     if (sws_ctx) sws_freeContext(sws_ctx);
