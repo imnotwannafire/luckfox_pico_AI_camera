@@ -15,6 +15,8 @@
 #include <map>
 #include <set>
 #include <mutex>
+#include <fstream>
+#include <sstream>
 
 #include "BYTETracker.h"
 #include "dataType.h"
@@ -24,6 +26,7 @@
 
 #include "opencv2/core/core.hpp"
 #include "opencv2/imgproc/imgproc.hpp"
+#include "opencv2/highgui/highgui.hpp"
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -65,6 +68,102 @@ static std::map<int, int> g_track_labels;
 static float g_scale = 1.0f;
 static int g_leftPadding = 0;
 static int g_topPadding = 0;
+
+// ============================================================================
+// ROI Logic
+// ============================================================================
+class ROICounter {
+private:
+    std::vector<cv::Point> polygon;
+    std::map<int, bool> track_state; 
+    int count_in = 0;
+    int count_out = 0;
+    bool is_active = false;
+    const char* config_file = "/tmp/roi_config.txt";
+    time_t last_check = 0;
+
+public:
+    void reload_config() {
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        if (tv.tv_sec - last_check < 3) return; // Check every 3s
+        last_check = tv.tv_sec;
+
+        std::ifstream infile(config_file);
+        if (infile.good()) {
+            std::vector<cv::Point> new_poly;
+            int x, y;
+            while (infile >> x >> y) {
+                if(x >= 0 && x <= 640 && y >= 0 && y <= 480)
+                    new_poly.push_back(cv::Point(x, y));
+            }
+            if (new_poly.size() >= 3) {
+                if (new_poly != polygon) {
+                    polygon = new_poly;
+                    is_active = true;
+                    // Reset counts on config change
+                    count_in = 0; count_out = 0; track_state.clear();
+                    printf("[ROI] New polygon loaded\n");
+                }
+            }
+        }
+    }
+
+    void update(const std::vector<STrack>& tracks) {
+        if (!is_active || polygon.empty()) return;
+
+        // Cleanup dead tracks
+        std::set<int> current_ids;
+        for (const auto& t : tracks) current_ids.insert(t.track_id);
+        for (auto it = track_state.begin(); it != track_state.end();) {
+            if (current_ids.find(it->first) == current_ids.end()) it = track_state.erase(it);
+            else ++it;
+        }
+
+        for (const auto& t : tracks) {
+            cv::Point2f feet(t.tlwh[0] + t.tlwh[2]/2, t.tlwh[1] + t.tlwh[3]);
+            double result = cv::pointPolygonTest(polygon, feet, false);
+            bool is_in = (result >= 0);
+
+            if (track_state.find(t.track_id) != track_state.end()) {
+                bool was_in = track_state[t.track_id];
+                if (!was_in && is_in) count_in++;
+                else if (was_in && !is_in) count_out++;
+            }
+            track_state[t.track_id] = is_in;
+        }
+    }
+
+    // Draw White Lines directly to Y-Plane (Fast)
+    void draw(unsigned char* yuv_data, int width, int height, int vir_width) {
+        if (!is_active || polygon.empty()) return;
+
+        cv::Mat mask(height, width, CV_8UC1, cv::Scalar(0));
+        std::vector<std::vector<cv::Point>> pts = {polygon};
+        cv::polylines(mask, pts, true, cv::Scalar(255), 2, cv::LINE_AA);
+
+        char text[64];
+        snprintf(text, sizeof(text), "In: %d | Out: %d", count_in, count_out);
+        cv::putText(mask, text, cv::Point(20, 40), cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(255), 2);
+
+        // Scan only relevant area
+        cv::Rect b = cv::boundingRect(polygon) | cv::Rect(0,0, 300, 50); 
+        b.x = std::max(0, b.x); b.y = std::max(0, b.y);
+        if(b.x + b.width > width) b.width = width - b.x;
+        if(b.y + b.height > height) b.height = height - b.y;
+
+        unsigned char* y_ptr = yuv_data;
+        for (int r = b.y; r < b.y + b.height; r++) {
+            const uint8_t* m_row = mask.ptr<uint8_t>(r);
+            uint8_t* y_row = y_ptr + r * vir_width;
+            for (int c = b.x; c < b.x + b.width; c++) {
+                if (m_row[c] > 0) y_row[c] = 255;
+            }
+        }
+    }
+};
+
+static ROICounter g_roi;
 
 // ============================================================================
 // RGA state
@@ -164,21 +263,6 @@ uint64_t rga_preprocess(MB_BLK src_blk, int src_width, int src_height,
 // ============================================================================
 // Helpers
 // ============================================================================
-void letterbox_cpu(cv::Mat& input, cv::Mat& output, int src_width, int src_height) {
-    float scaleX = (float)MODEL_WIDTH / (float)src_width;
-    float scaleY = (float)MODEL_HEIGHT / (float)src_height;
-    g_scale = std::min(scaleX, scaleY);
-    int inputWidth  = (int)((float)src_width * g_scale);
-    int inputHeight = (int)((float)src_height * g_scale);
-    g_leftPadding = (MODEL_WIDTH - inputWidth) / 2;
-    g_topPadding  = (MODEL_HEIGHT - inputHeight) / 2;
-    cv::Mat inputScale;
-    cv::resize(input, inputScale, cv::Size(inputWidth, inputHeight), 0, 0, cv::INTER_NEAREST);
-    output.setTo(cv::Scalar(0, 0, 0));
-    cv::Rect roi(g_leftPadding, g_topPadding, inputWidth, inputHeight);
-    inputScale.copyTo(output(roi));
-}
-
 void mapCoordinates(int *x, int *y) {
     int mx = *x - g_leftPadding;
     int my = *y - g_topPadding;
@@ -204,7 +288,7 @@ uint64_t get_time_us() {
 }
 
 // ============================================================================
-// OSD Drawing
+// OSD: SAFE DRAWING
 // ============================================================================
 void draw_text_labels_hybrid(unsigned char *yuv_data, int width, int height,
                              int vir_width, int x, int y, const char *text) {
@@ -220,12 +304,10 @@ void draw_text_labels_hybrid(unsigned char *yuv_data, int width, int height,
     int draw_y = (y > label_h + 4) ? (y - label_h - 2) : (y + 20);
     draw_y = std::max(0, std::min(draw_y, height - label_h));
 
-    // Draw to mask
     cv::Mat mask(label_h, label_w, CV_8UC1, cv::Scalar(0)); 
     cv::putText(mask, text, cv::Point(padding, label_h - padding),
                 cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255), 1, cv::LINE_AA);
 
-    // Y Plane
     unsigned char *y_ptr = yuv_data;
     for (int row = 0; row < label_h; row++) {
         if (draw_y + row >= height) break;
@@ -237,10 +319,13 @@ void draw_text_labels_hybrid(unsigned char *yuv_data, int width, int height,
         }
     }
 
-    // UV Plane
     unsigned char *u_ptr = yuv_data + vir_width * height;
     unsigned char *v_ptr = u_ptr + (vir_width * height / 4);
-    int uv_x = x / 2, uv_y = draw_y / 2, uv_w = label_w / 2, uv_h = label_h / 2;
+    
+    int uv_x = x / 2;
+    int uv_y = draw_y / 2;
+    int uv_w = label_w / 2;
+    int uv_h = label_h / 2;
     int uv_stride = vir_width / 2;
 
     for (int row = 0; row < uv_h; row++) {
@@ -267,16 +352,13 @@ void draw_bbox_i420_correct(unsigned char *data, int width, int height, int vir_
         for(int r=start_row; r<end_row; r++) memset(y_plane + r*vir_width + start_col, Y_VAL, end_col - start_col);
     };
     
-    // Top/Bottom
     if(y+thickness < height) fill_y(y, y+thickness, x, x+w);
     if(y+h-thickness >= 0) fill_y(y+h-thickness, y+h, x, x+w);
-    // Left/Right
     for(int r=y; r<y+h && r<height; r++) {
         if(x+thickness < width) memset(y_plane + r*vir_width + x, Y_VAL, thickness);
         if(x+w-thickness >= 0) memset(y_plane + r*vir_width + x+w-thickness, Y_VAL, thickness);
     }
 
-    // UV
     int uv_s = vir_width/2, uv_x = x/2, uv_y = y/2, uv_w = w/2, uv_h = h/2, uv_t = std::max(1, thickness/2);
     auto fill_chroma = [&](unsigned char* p, uint8_t v) {
         if(uv_y+uv_t < height/2) for(int r=uv_y; r<uv_y+uv_t; r++) memset(p + r*uv_s + uv_x, v, uv_w);
@@ -290,9 +372,6 @@ void draw_bbox_i420_correct(unsigned char *data, int width, int height, int vir_
     fill_chroma(v_plane, V_VAL);
 }
 
-// ============================================================================
-// VENC Thread
-// ============================================================================
 static void *GetMediaBuffer(void *arg) {
     (void)arg;
     VENC_STREAM_S stFrame;
@@ -339,7 +418,6 @@ int main(int argc, char *argv[]) {
     
     const char *model_path = "./model/yolov5.rknn";
     unsigned char *temp_i420_buffer = NULL;
-    cv::Mat *bgr_frame = NULL;
     VIDEO_FRAME_INFO_S h264_frame;
     VENC_RECV_PIC_PARAM_S stRecvParam;
     RK_U32 H264_TimeRef = 0;
@@ -384,7 +462,7 @@ int main(int argc, char *argv[]) {
         width, height, AV_PIX_FMT_YUV420P, SWS_FAST_BILINEAR, NULL, NULL, NULL);
 
     avframe = av_frame_alloc();
-    i420_frame = av_frame_alloc(); // Cached Intermediate buffer
+    i420_frame = av_frame_alloc(); 
     pkt = av_packet_alloc();
     i420_frame->format = AV_PIX_FMT_YUV420P;
     i420_frame->width = width;
@@ -416,7 +494,6 @@ int main(int argc, char *argv[]) {
     pthread_create(&stream_thread, NULL, GetMediaBuffer, NULL);
 
     temp_i420_buffer = (unsigned char *)malloc(width * height * 3 / 2);
-    bgr_frame = new cv::Mat(height, width, CV_8UC3);
 
     memset(&h264_frame, 0, sizeof(h264_frame));
     h264_frame.stVFrame.u32Width = width;
@@ -431,7 +508,7 @@ int main(int argc, char *argv[]) {
     uint64_t start_time = get_time_us();
     uint64_t last_fps_time = start_time;
     
-    printf("--- Running (Robust: Buffered I420 + RGA + PingPong) ---\n");
+    printf("--- Running (Robust Production) ---\n");
 
     while (g_running && av_read_frame(fmt_ctx, pkt) >= 0) {
         if (pkt->stream_index == video_idx) {
@@ -443,7 +520,7 @@ int main(int argc, char *argv[]) {
                 if (mb == MB_INVALID_HANDLE) { usleep(1000); continue; }
                 unsigned char* data = (unsigned char*)RK_MPI_MB_Handle2VirAddr(mb);
                 
-                // 2. Decode to Cached RAM Buffer (Accuracy & Speed)
+                // 2. Decode to Cached RAM (High Accuracy)
                 sws_scale(sws_ctx, (const uint8_t * const*)avframe->data, avframe->linesize,
                           0, dec_ctx->height, i420_frame->data, i420_frame->linesize);
 
@@ -459,6 +536,15 @@ int main(int argc, char *argv[]) {
                 for (int i = 0; i < height / 2; i++)
                     memcpy(data + v_off + i * (vir_width/2), i420_frame->data[2] + i * i420_frame->linesize[2], width/2);
 
+                // --- SNAPSHOT LOGIC FOR CONFIG ---
+                if (access("/tmp/req_snapshot", F_OK) == 0) {
+                    cv::Mat snap_i420(height + height/2, width, CV_8UC1, i420_frame->data[0]);
+                    cv::Mat snap_bgr;
+                    cv::cvtColor(snap_i420, snap_bgr, cv::COLOR_YUV2RGB_I420);
+                    cv::imwrite("/tmp/preview.jpg", snap_bgr);
+                    remove("/tmp/req_snapshot");
+                }
+
                 ai_counter++;
                 bool run_inference = (ai_counter % 2 == 0); 
                 bool used_rga = false;
@@ -466,7 +552,7 @@ int main(int argc, char *argv[]) {
 
                 if (run_inference) {
                     uint64_t ai_start = get_time_us();
-                    // 4. RGA Preprocess from DMA buffer
+                    
                     preprocess_time = rga_preprocess(mb, width, height, vir_width, vir_height, 
                                       (unsigned char*)rknn_app_ctx.input_mems[0]->virt_addr);
                     used_rga = (preprocess_time > 0);
@@ -474,7 +560,6 @@ int main(int argc, char *argv[]) {
                     if (!used_rga) {
                         uint64_t t0 = get_time_us();
                         for (int i = 0; i < height; i++) memcpy(temp_i420_buffer + i * width, data + i * vir_width, width);
-                        // ... fallback U/V copy ...
                         preprocess_time = get_time_us() - t0;
                     }
 
@@ -483,6 +568,9 @@ int main(int argc, char *argv[]) {
                         std::vector<Object> objs = convert_detections_to_tracker(od_results, width, height);
                         if (!objs.empty()) {
                             g_active_tracks = g_tracker->update(objs);
+                            g_roi.reload_config();
+                            g_roi.update(g_active_tracks);
+                            
                             for (const auto& tr : g_active_tracks) {
                                 if (tr.tlwh.size() < 4) continue;
                                 cv::Rect_<float> r(tr.tlwh[0], tr.tlwh[1], tr.tlwh[2], tr.tlwh[3]);
@@ -499,8 +587,10 @@ int main(int argc, char *argv[]) {
                     ai_time = get_time_us() - ai_start;
                 }
 
-                // 5. OSD 
+                // 5. OSD & ROI
                 uint64_t osd_start = get_time_us();
+                g_roi.draw(data, width, height, vir_width);
+                
                 for (const auto& t : g_active_tracks) {
                     int sX = (int)t.tlwh[0], sY = (int)t.tlwh[1], w = (int)t.tlwh[2], h = (int)t.tlwh[3];
                     draw_bbox_i420_correct(data, width, height, vir_width, sX, sY, w, h, 2);
@@ -542,7 +632,6 @@ int main(int argc, char *argv[]) {
     }
 
     if (g_tracker) delete g_tracker;
-    if (bgr_frame) delete bgr_frame;
     if (temp_i420_buffer) free(temp_i420_buffer);
     if (pkt) av_packet_free(&pkt);
     if (i420_frame) av_frame_free(&i420_frame);
