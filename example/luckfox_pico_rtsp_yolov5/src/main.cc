@@ -149,7 +149,7 @@ uint64_t rga_preprocess(MB_BLK src_blk, int src_width, int src_height,
 
     IM_STATUS ret = imresize(src_buf, dst_buf);
     if (ret != IM_STATUS_SUCCESS) {
-         ret = imcvtcolor(src_buf, dst_buf, src_buf.format, dst_buf.format, IM_YUV_TO_RGB_BT601_LIMIT);
+         ret = imcvtcolor(src_buf, dst_buf, src_buf.format, dst_buf.format, IM_YUV_TO_RGB_BT601_FULL);
     }
     if (ret != IM_STATUS_SUCCESS) return 0;
 
