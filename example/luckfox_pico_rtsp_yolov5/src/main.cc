@@ -53,10 +53,6 @@ extern "C" {
 // Global state
 // ============================================================================
 static volatile bool g_running = true;
-static float g_scale = 1.0f;
-static int g_leftPadding = 0;
-static int g_topPadding = 0;
-
 rknn_app_context_t rknn_app_ctx;
 object_detect_result_list od_results;
 rtsp_demo_handle g_rtsplive = NULL;
@@ -66,16 +62,18 @@ static BYTETracker* g_tracker = nullptr;
 static std::vector<STrack> g_active_tracks;
 static std::map<int, int> g_track_labels;
 
+static float g_scale = 1.0f;
+static int g_leftPadding = 0;
+static int g_topPadding = 0;
+
 // ============================================================================
 // RGA state
 // ============================================================================
 static bool g_rga_available = false;
 static std::mutex g_rga_mutex;
-
 static MB_POOL g_rga_dst_pool = MB_INVALID_POOLID;
 static MB_BLK g_rga_dst_blk = MB_INVALID_HANDLE; 
 static unsigned char* g_rga_dst_vir = nullptr;
-
 static int g_scaled_w = 0;
 static int g_scaled_h = 0;
 static int g_src_vir_w = 0;
@@ -94,7 +92,6 @@ bool init_rga_acceleration(int width, int height, int vir_width, int vir_height)
 
     g_scaled_w = RK_ALIGN_4((int)((float)width * g_scale));
     g_scaled_h = RK_ALIGN_4((int)((float)height * g_scale));
-    
     g_scaled_w = std::min(g_scaled_w, MODEL_WIDTH);
     g_scaled_h = std::min(g_scaled_h, MODEL_HEIGHT);
 
@@ -112,7 +109,6 @@ bool init_rga_acceleration(int width, int height, int vir_width, int vir_height)
     g_rga_dst_pool = RK_MPI_MB_CreatePool(&pool_cfg);
     if (g_rga_dst_pool == MB_INVALID_POOLID) return false;
 
-    // Use Uncached for AI input consistency
     g_rga_dst_blk = RK_MPI_MB_GetMB(g_rga_dst_pool, dst_size, RK_FALSE);
     if (g_rga_dst_blk == MB_INVALID_HANDLE) return false;
 
@@ -129,7 +125,7 @@ void cleanup_rga_acceleration() {
 }
 
 // ============================================================================
-// RGA Process (I420 -> RGB)
+// RGA Process (I420 -> RGB with Full Range)
 // ============================================================================
 uint64_t rga_preprocess(MB_BLK src_blk, int src_width, int src_height, 
                         int vir_width, int vir_height, unsigned char* output_npu_ptr) {
@@ -147,10 +143,9 @@ uint64_t rga_preprocess(MB_BLK src_blk, int src_width, int src_height,
     rga_buffer_t dst_buf = wrapbuffer_fd_t(dst_fd, g_scaled_w, g_scaled_h, 
                                            MODEL_WIDTH, g_scaled_h, RK_FORMAT_RGB_888);
 
-    IM_STATUS ret = imresize(src_buf, dst_buf);
-    if (ret != IM_STATUS_SUCCESS) {
-         ret = imcvtcolor(src_buf, dst_buf, src_buf.format, dst_buf.format, IM_YUV_TO_RGB_BT601_FULL);
-    }
+    // Ensure Full Range Color for AI Accuracy
+    IM_STATUS ret = imcvtcolor(src_buf, dst_buf, src_buf.format, dst_buf.format, IM_YUV_TO_RGB_BT601_FULL);
+    
     if (ret != IM_STATUS_SUCCESS) return 0;
 
     RK_MPI_SYS_MmzFlushCache(g_rga_dst_blk, RK_TRUE); 
@@ -167,7 +162,7 @@ uint64_t rga_preprocess(MB_BLK src_blk, int src_width, int src_height,
 }
 
 // ============================================================================
-// Fallback / Utils
+// Helpers
 // ============================================================================
 void letterbox_cpu(cv::Mat& input, cv::Mat& output, int src_width, int src_height) {
     float scaleX = (float)MODEL_WIDTH / (float)src_width;
@@ -200,10 +195,7 @@ void cleanup_stale_labels(const std::vector<STrack>& active_tracks) {
     }
 }
 
-void signal_handler(int sig) {
-    printf("\nShutting down gracefully...\n");
-    g_running = false;
-}
+void signal_handler(int sig) { g_running = false; }
 
 uint64_t get_time_us() {
     struct timeval tv;
@@ -212,31 +204,28 @@ uint64_t get_time_us() {
 }
 
 // ============================================================================
-// OSD: PIXEL-BY-PIXEL SAFE DRAWING
+// OSD Drawing
 // ============================================================================
 void draw_text_labels_hybrid(unsigned char *yuv_data, int width, int height,
                              int vir_width, int x, int y, const char *text) {
     if (!text || strlen(text) == 0) return;
-
     int baseline = 0;
     cv::Size text_size = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, 0.5, 1, &baseline);
     int padding = 4;
-    int label_w = (text_size.width + padding * 2);
+    int label_w = RK_ALIGN_2(text_size.width + padding * 2);
     int label_h = (text_size.height + padding * 2);
-    
-    label_w = RK_ALIGN_2(label_w);
 
     x = std::max(0, std::min(x, width - label_w));
     y = std::max(0, std::min(y, height - label_h));
     int draw_y = (y > label_h + 4) ? (y - label_h - 2) : (y + 20);
     draw_y = std::max(0, std::min(draw_y, height - label_h));
 
-    // 1. Draw Text to Grayscale Mask
+    // Draw to mask
     cv::Mat mask(label_h, label_w, CV_8UC1, cv::Scalar(0)); 
     cv::putText(mask, text, cv::Point(padding, label_h - padding),
                 cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255), 1, cv::LINE_AA);
 
-    // 2. Safe Pixel Copy Loop
+    // Y Plane
     unsigned char *y_ptr = yuv_data;
     for (int row = 0; row < label_h; row++) {
         if (draw_y + row >= height) break;
@@ -248,14 +237,10 @@ void draw_text_labels_hybrid(unsigned char *yuv_data, int width, int height,
         }
     }
 
-    // 3. Clear UV (I420 planar)
+    // UV Plane
     unsigned char *u_ptr = yuv_data + vir_width * height;
     unsigned char *v_ptr = u_ptr + (vir_width * height / 4);
-    
-    int uv_x = x / 2;
-    int uv_y = draw_y / 2;
-    int uv_w = label_w / 2;
-    int uv_h = label_h / 2;
+    int uv_x = x / 2, uv_y = draw_y / 2, uv_w = label_w / 2, uv_h = label_h / 2;
     int uv_stride = vir_width / 2;
 
     for (int row = 0; row < uv_h; row++) {
@@ -278,48 +263,43 @@ void draw_bbox_i420_correct(unsigned char *data, int width, int height, int vir_
     unsigned char *u_plane = data + vir_width * height;
     unsigned char *v_plane = u_plane + (vir_width * height / 4);
     
-    // Y Plane
-    for (int t = 0; t < thickness; t++) {
-        if (y+t < height) memset(y_plane + (y+t)*vir_width + x, Y_VAL, w);
-        if (y+h-1-t >= 0 && y+h-1-t < height) memset(y_plane + (y+h-1-t)*vir_width + x, Y_VAL, w);
-    }
-    for (int r = y; r < y+h && r < height; r++) {
-        for (int t = 0; t < thickness; t++) {
-            if (x+t < width) y_plane[r*vir_width + x+t] = Y_VAL;
-            if (x+w-1-t < width) y_plane[r*vir_width + x+w-1-t] = Y_VAL;
-        }
-    }
+    auto fill_y = [&](int start_row, int end_row, int start_col, int end_col) {
+        for(int r=start_row; r<end_row; r++) memset(y_plane + r*vir_width + start_col, Y_VAL, end_col - start_col);
+    };
     
-    // UV Plane
-    int uv_stride = vir_width / 2;
-    int uv_x = x/2, uv_y = y/2, uv_w = w/2, uv_h = h/2;
-    int uv_thick = std::max(1, thickness/2);
-    
-    auto fill_uv = [&](unsigned char* plane, uint8_t val) {
-        for (int t = 0; t < uv_thick; t++) {
-            if (uv_y+t < height/2) memset(plane + (uv_y+t)*uv_stride + uv_x, val, uv_w);
-            if (uv_y+uv_h-1-t >= 0 && uv_y+uv_h-1-t < height/2) memset(plane + (uv_y+uv_h-1-t)*uv_stride + uv_x, val, uv_w);
-        }
-        for (int r = uv_y; r < uv_y+uv_h && r < height/2; r++) {
-            for (int t = 0; t < uv_thick; t++) {
-                if (uv_x+t < uv_stride) plane[r*uv_stride + uv_x+t] = val;
-                if (uv_x+uv_w-1-t < uv_stride) plane[r*uv_stride + uv_x+uv_w-1-t] = val;
-            }
+    // Top/Bottom
+    if(y+thickness < height) fill_y(y, y+thickness, x, x+w);
+    if(y+h-thickness >= 0) fill_y(y+h-thickness, y+h, x, x+w);
+    // Left/Right
+    for(int r=y; r<y+h && r<height; r++) {
+        if(x+thickness < width) memset(y_plane + r*vir_width + x, Y_VAL, thickness);
+        if(x+w-thickness >= 0) memset(y_plane + r*vir_width + x+w-thickness, Y_VAL, thickness);
+    }
+
+    // UV
+    int uv_s = vir_width/2, uv_x = x/2, uv_y = y/2, uv_w = w/2, uv_h = h/2, uv_t = std::max(1, thickness/2);
+    auto fill_chroma = [&](unsigned char* p, uint8_t v) {
+        if(uv_y+uv_t < height/2) for(int r=uv_y; r<uv_y+uv_t; r++) memset(p + r*uv_s + uv_x, v, uv_w);
+        if(uv_y+uv_h-uv_t >= 0) for(int r=uv_y+uv_h-uv_t; r<uv_y+uv_h; r++) if(r<height/2) memset(p + r*uv_s + uv_x, v, uv_w);
+        for(int r=uv_y; r<uv_y+uv_h && r<height/2; r++) {
+            if(uv_x+uv_t < uv_s) memset(p + r*uv_s + uv_x, v, uv_t);
+            if(uv_x+uv_w-uv_t >= 0) memset(p + r*uv_s + uv_x+uv_w-uv_t, v, uv_t);
         }
     };
-    fill_uv(u_plane, U_VAL);
-    fill_uv(v_plane, V_VAL);
+    fill_chroma(u_plane, U_VAL);
+    fill_chroma(v_plane, V_VAL);
 }
 
+// ============================================================================
+// VENC Thread
+// ============================================================================
 static void *GetMediaBuffer(void *arg) {
     (void)arg;
     VENC_STREAM_S stFrame;
     stFrame.pstPack = (VENC_PACK_S *)malloc(sizeof(VENC_PACK_S));
-    if (!stFrame.pstPack) return NULL;
     stFrame.u32PackCount = 1;
     while (g_running) {
-        RK_S32 s32Ret = RK_MPI_VENC_GetStream(0, &stFrame, 1000);
-        if (s32Ret == RK_SUCCESS) {
+        if (RK_MPI_VENC_GetStream(0, &stFrame, 1000) == RK_SUCCESS) {
             if (g_rtsplive && g_rtsp_session) {
                 void *pData = RK_MPI_MB_Handle2VirAddr(stFrame.pstPack->pMbBlk);
                 rtsp_tx_video(g_rtsp_session, (uint8_t *)pData, stFrame.pstPack->u32Len, stFrame.pstPack->u64PTS);
@@ -357,8 +337,6 @@ int main(int argc, char *argv[]) {
     system("RkLunch-stop.sh");
     signal(SIGINT, signal_handler);
     
-    RK_S32 s32Ret = 0;
-    cv::Mat letterbox_output(MODEL_HEIGHT, MODEL_WIDTH, CV_8UC3);
     const char *model_path = "./model/yolov5.rknn";
     unsigned char *temp_i420_buffer = NULL;
     cv::Mat *bgr_frame = NULL;
@@ -406,7 +384,7 @@ int main(int argc, char *argv[]) {
         width, height, AV_PIX_FMT_YUV420P, SWS_FAST_BILINEAR, NULL, NULL, NULL);
 
     avframe = av_frame_alloc();
-    i420_frame = av_frame_alloc();
+    i420_frame = av_frame_alloc(); // Cached Intermediate buffer
     pkt = av_packet_alloc();
     i420_frame->format = AV_PIX_FMT_YUV420P;
     i420_frame->width = width;
@@ -416,7 +394,7 @@ int main(int argc, char *argv[]) {
     RK_MPI_SYS_Init();
     venc_init(0, width, height, RK_VIDEO_ID_AVC);
 
-    // --- INCREASE BUFFER COUNT TO 6 FOR STABILITY ---
+    // Ping-Pong Pool (6 frames for safety)
     MB_POOL_CONFIG_S PoolCfg;
     memset(&PoolCfg, 0, sizeof(PoolCfg));
     PoolCfg.u64MBSize = vir_width * vir_height * 3 / 2;
@@ -449,32 +427,27 @@ int main(int argc, char *argv[]) {
     h264_frame.stVFrame.u32FrameFlag = 160;
 
     int ai_counter = 0;
-    
-    // LOGGING VARIABLES
-    uint64_t frame_count = 0;
-    uint64_t fps_frame_count = 0;
+    uint64_t frame_count = 0, fps_frame_count = 0;
     uint64_t start_time = get_time_us();
     uint64_t last_fps_time = start_time;
     
-    printf("--- Running (Buffered I420) ---\n");
+    printf("--- Running (Robust: Buffered I420 + RGA + PingPong) ---\n");
 
     while (g_running && av_read_frame(fmt_ctx, pkt) >= 0) {
         if (pkt->stream_index == video_idx) {
             avcodec_send_packet(dec_ctx, pkt);
             while (avcodec_receive_frame(dec_ctx, avframe) == 0) {
                 
-                // 1. Get Fresh Buffer (Wait if pool is full, don't skip)
+                // 1. Get Fresh DMA Buffer
                 MB_BLK mb = RK_MPI_MB_GetMB(src_Pool, PoolCfg.u64MBSize, RK_FALSE); 
-                if (mb == MB_INVALID_HANDLE) {
-                    usleep(1000); // Small wait to let VENC release
-                    continue; 
-                }
-                
+                if (mb == MB_INVALID_HANDLE) { usleep(1000); continue; }
                 unsigned char* data = (unsigned char*)RK_MPI_MB_Handle2VirAddr(mb);
                 
+                // 2. Decode to Cached RAM Buffer (Accuracy & Speed)
                 sws_scale(sws_ctx, (const uint8_t * const*)avframe->data, avframe->linesize,
                           0, dec_ctx->height, i420_frame->data, i420_frame->linesize);
 
+                // 3. Copy to DMA (Robust transfer)
                 for (int i = 0; i < height; i++)
                     memcpy(data + i * vir_width, i420_frame->data[0] + i * i420_frame->linesize[0], width);
                 
@@ -489,12 +462,11 @@ int main(int argc, char *argv[]) {
                 ai_counter++;
                 bool run_inference = (ai_counter % 2 == 0); 
                 bool used_rga = false;
-                uint64_t ai_time = 0;
-                uint64_t preprocess_time = 0;
+                uint64_t ai_time = 0, preprocess_time = 0;
 
                 if (run_inference) {
                     uint64_t ai_start = get_time_us();
-                    
+                    // 4. RGA Preprocess from DMA buffer
                     preprocess_time = rga_preprocess(mb, width, height, vir_width, vir_height, 
                                       (unsigned char*)rknn_app_ctx.input_mems[0]->virt_addr);
                     used_rga = (preprocess_time > 0);
@@ -502,7 +474,7 @@ int main(int argc, char *argv[]) {
                     if (!used_rga) {
                         uint64_t t0 = get_time_us();
                         for (int i = 0; i < height; i++) memcpy(temp_i420_buffer + i * width, data + i * vir_width, width);
-                        // fallback logic would go here...
+                        // ... fallback U/V copy ...
                         preprocess_time = get_time_us() - t0;
                     }
 
@@ -527,7 +499,7 @@ int main(int argc, char *argv[]) {
                     ai_time = get_time_us() - ai_start;
                 }
 
-                // 4. OSD (Safe Loop + Flush)
+                // 5. OSD 
                 uint64_t osd_start = get_time_us();
                 for (const auto& t : g_active_tracks) {
                     int sX = (int)t.tlwh[0], sY = (int)t.tlwh[1], w = (int)t.tlwh[2], h = (int)t.tlwh[3];
@@ -540,31 +512,27 @@ int main(int argc, char *argv[]) {
                 }
                 uint64_t osd_time = get_time_us() - osd_start;
 
-                // CRITICAL FIX: Flush Write-Buffer to RAM so VENC sees OSD
+                // 6. Flush & Send
                 RK_MPI_SYS_MmzFlushCache(mb, RK_FALSE);
-
                 h264_frame.stVFrame.pMbBlk = mb; 
                 h264_frame.stVFrame.u32TimeRef = H264_TimeRef++;
                 h264_frame.stVFrame.u64PTS = TEST_COMM_GetNowUs();
-                
                 RK_MPI_VENC_SendFrame(0, &h264_frame, 1000);
                 RK_MPI_MB_ReleaseMB(mb); 
 
-                // LOGGING
+                // 7. Stats
                 frame_count++;
                 fps_frame_count++;
                 uint64_t now = get_time_us();
                 if (now - last_fps_time >= 1000000) {
                     double fps = (double)fps_frame_count / ((now - last_fps_time) / 1000000.0);
                     double elapsed = (now - start_time) / 1000000.0;
-                    if (run_inference) {
+                    if (run_inference)
                         printf("[%6.1fs] FPS:%5.1f | AI:%5.1fms | Pre:%5.1fms (%s) | OSD:%4.1fms\n",
                                elapsed, fps, ai_time / 1000.0, preprocess_time / 1000.0, 
                                used_rga ? "RGA" : "CPU", osd_time / 1000.0);
-                    } else {
-                        printf("[%6.1fs] FPS:%5.1f | AI: SKIP | OSD:%4.1fms\n",
-                               elapsed, fps, osd_time / 1000.0);
-                    }
+                    else
+                        printf("[%6.1fs] FPS:%5.1f | AI: SKIP | OSD:%4.1fms\n", elapsed, fps, osd_time / 1000.0);
                     fps_frame_count = 0;
                     last_fps_time = now;
                 }
