@@ -3,331 +3,186 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Luckfox AI Config</title>
+    <title>Camera AI Config</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
-        body { background-color: #111827; color: #f3f4f6; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-        
-        /* Canvas Layering */
-        #canvas-wrapper { position: relative; width: 640px; height: 480px; background: #000; border: 2px solid #374151; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+        body { background-color: #111827; color: #f3f4f6; font-family: sans-serif; }
+        #canvas-wrapper { position: relative; width: 640px; height: 480px; background: #000; border: 2px solid #374151; border-radius: 8px; overflow: hidden; }
         #snapshot-img { width: 100%; height: 100%; object-fit: contain; display: block; }
         #roi-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; cursor: crosshair; }
-
-        /* Custom Scrollbar */
-        ::-webkit-scrollbar { width: 8px; }
-        ::-webkit-scrollbar-track { background: #1f2937; }
-        ::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 4px; }
-        ::-webkit-scrollbar-thumb:hover { background: #6b7280; }
-
-        .btn { transition: all 0.2s; }
-        .btn:active { transform: scale(0.95); }
+        .btn { transition: all 0.2s; } .btn:active { transform: scale(0.95); }
     </style>
 </head>
 <body class="min-h-screen p-4 md:p-8">
 
-    <!-- Navbar -->
     <nav class="flex justify-between items-center mb-8 bg-gray-800 p-4 rounded-xl shadow-lg border border-gray-700">
         <div class="flex items-center space-x-3">
             <i class="fas fa-microchip text-blue-500 text-2xl"></i>
             <div>
-                <h1 class="text-xl font-bold tracking-wide">Vehicle Counter</h1>
-                <p class="text-xs text-gray-400">Device Configuration</p>
+                <h1 class="text-xl font-bold tracking-wide">Vehicle Counter Camera</h1>
+                <p class="text-xs text-gray-400">Main control</p>
             </div>
         </div>
         <div class="flex items-center space-x-4">
-            <div id="status-indicator" class="flex items-center space-x-2 bg-gray-900 px-3 py-1 rounded-full border border-gray-700">
+            <!-- STATUS INDICATOR -->
+            <div id="status-container" class="flex items-center space-x-2 bg-gray-900 px-3 py-1 rounded-full border border-gray-700">
                 <span class="relative flex h-3 w-3">
-                  <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                  <span class="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span>
+                  <span id="status-ping" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                  <span id="status-dot" class="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
                 </span>
-                <span class="text-xs font-mono text-green-400">SYSTEM ONLINE</span>
+                <span id="status-text" class="text-xs font-mono text-red-400">OFFLINE</span>
             </div>
         </div>
     </nav>
 
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
         
-        <!-- LEFT COLUMN: Controls -->
+        <!-- CONTROLS -->
         <div class="lg:col-span-1 space-y-6">
-            
-            <!-- RTSP Settings Card -->
             <div class="bg-gray-800 rounded-xl p-6 shadow-lg border border-gray-700">
-                <h2 class="text-lg font-semibold mb-4 flex items-center text-blue-400">
-                    <i class="fas fa-video mr-3"></i> Stream Configuration
-                </h2>
-                <div class="space-y-4">
-                    <div>
-                        <label class="block text-xs font-bold text-gray-500 uppercase mb-1">RTSP Source URL</label>
-                        <div class="relative">
-                            <i class="fas fa-link absolute left-3 top-3 text-gray-500"></i>
-                            <input type="text" id="rtspUrl" class="w-full bg-gray-900 border border-gray-600 rounded-lg py-2 pl-10 pr-3 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition" placeholder="rtsp://...">
-                        </div>
-                    </div>
-                    <button onclick="saveRtsp()" class="btn w-full bg-blue-600 hover:bg-blue-500 text-white font-medium py-2.5 rounded-lg shadow-md flex justify-center items-center">
-                        <i class="fas fa-save mr-2"></i> Save & Restart Stream
-                    </button>
+                <h2 class="text-lg font-semibold mb-4 text-orange-400"><i class="fas fa-cogs mr-3"></i> System</h2>
+                <div class="grid grid-cols-2 gap-3 mb-3">
+                    <button onclick="controlApp('start')" class="btn bg-emerald-600 hover:bg-emerald-500 text-white py-2 rounded-lg"><i class="fas fa-play mr-2"></i> Start</button>
+                    <button onclick="controlApp('stop')" class="btn bg-rose-600 hover:bg-rose-500 text-white py-2 rounded-lg"><i class="fas fa-stop mr-2"></i> Stop</button>
                 </div>
+                <button onclick="controlApp('restart')" class="btn w-full bg-orange-600 hover:bg-orange-500 text-white py-2 rounded-lg"><i class="fas fa-redo mr-2"></i> Restart App</button>
             </div>
 
-            <!-- ROI Tools Card -->
             <div class="bg-gray-800 rounded-xl p-6 shadow-lg border border-gray-700">
-                <h2 class="text-lg font-semibold mb-4 flex items-center text-purple-400">
-                    <i class="fas fa-draw-polygon mr-3"></i> Counting Zone
-                </h2>
-                
-                <div class="p-3 bg-gray-900 rounded-lg border border-gray-700 mb-4">
-                    <div class="flex justify-between text-sm text-gray-400 mb-1">
-                        <span>Points:</span>
-                        <span id="point-count" class="text-white font-mono">0</span>
-                    </div>
-                    <div class="flex justify-between text-sm text-gray-400">
-                        <span>Cursor:</span>
-                        <span id="coord-display" class="text-white font-mono">0, 0</span>
-                    </div>
-                </div>
+                <h2 class="text-lg font-semibold mb-4 text-blue-400"><i class="fas fa-video mr-3"></i> Stream</h2>
+                <input type="text" id="rtspUrl" class="w-full bg-gray-900 border border-gray-600 rounded-lg py-2 px-3 text-sm mb-3" placeholder="rtsp://...">
+                <button onclick="saveRtsp()" class="btn w-full bg-blue-600 hover:bg-blue-500 text-white py-2 rounded-lg"><i class="fas fa-save mr-2"></i> Save URL</button>
+            </div>
 
+            <div class="bg-gray-800 rounded-xl p-6 shadow-lg border border-gray-700">
+                <h2 class="text-lg font-semibold mb-4 text-purple-400"><i class="fas fa-draw-polygon mr-3"></i> ROI</h2>
+                <div class="flex justify-between text-sm text-gray-400 mb-3">
+                    <span>Points: <span id="point-count" class="text-white">0</span></span>
+                    <button onclick="requestSnapshot()" class="text-blue-400 hover:text-white"><i class="fas fa-camera"></i> Refresh</button>
+                </div>
                 <div class="grid grid-cols-2 gap-3">
-                    <button onclick="requestSnapshot()" class="btn col-span-2 bg-gray-700 hover:bg-gray-600 text-white py-2 rounded-lg border border-gray-600 flex justify-center items-center">
-                        <i class="fas fa-camera mr-2"></i> Refresh Image
-                    </button>
-                    <button onclick="clearPoly()" class="btn bg-red-600 hover:bg-red-500 text-white py-2 rounded-lg shadow-md flex justify-center items-center">
-                        <i class="fas fa-trash-alt mr-2"></i> Clear
-                    </button>
-                    <button onclick="savePoly()" class="btn bg-green-600 hover:bg-green-500 text-white py-2 rounded-lg shadow-md flex justify-center items-center">
-                        <i class="fas fa-check mr-2"></i> Apply
-                    </button>
+                    <button onclick="clearPoly()" class="btn bg-gray-600 hover:bg-gray-500 text-white py-2 rounded-lg">Clear</button>
+                    <button onclick="savePoly()" class="btn bg-green-600 hover:bg-green-500 text-white py-2 rounded-lg">Apply</button>
                 </div>
-                <p class="text-xs text-gray-500 mt-3 text-center">
-                    <i class="fas fa-info-circle mr-1"></i> Click on image to draw. Must have 3+ points.
-                </p>
             </div>
-
-            <!-- System Actions Card -->
-            <div class="bg-gray-800 rounded-xl p-6 shadow-lg border border-gray-700">
-                <h2 class="text-lg font-semibold mb-4 flex items-center text-orange-400">
-                    <i class="fas fa-cogs mr-3"></i> System Operations
-                </h2>
-                <button onclick="restartApp()" class="btn w-full bg-orange-600 hover:bg-orange-500 text-white font-medium py-2.5 rounded-lg shadow-md flex justify-center items-center">
-                    <i class="fas fa-power-off mr-2"></i> Soft Reset Application
-                </button>
-            </div>
-
         </div>
 
-        <!-- RIGHT COLUMN: Visualization -->
+        <!-- VISUALIZATION -->
         <div class="lg:col-span-2 flex flex-col items-center">
-            
-            <!-- Canvas Wrapper -->
             <div id="canvas-wrapper">
                 <div id="loading-overlay" class="absolute inset-0 bg-gray-900 bg-opacity-90 z-20 flex flex-col items-center justify-center">
                     <i class="fas fa-circle-notch fa-spin text-4xl text-blue-500 mb-3"></i>
-                    <span class="text-gray-300 font-medium">Waiting for Snapshot...</span>
+                    <span id="loading-text" class="text-gray-300 font-medium">Waiting for Snapshot...</span>
                 </div>
-                <img id="snapshot-img" src="" alt="Snapshot" draggable="false">
+                <img id="snapshot-img" src="" alt="" draggable="false">
                 <canvas id="roi-canvas" width="640" height="480"></canvas>
             </div>
-
-            <!-- Legend/Instructions -->
-            <div class="mt-6 flex space-x-6 text-sm text-gray-400">
-                <div class="flex items-center"><span class="w-3 h-3 bg-blue-500 rounded-full mr-2 opacity-50"></span> Active Zone</div>
-                <div class="flex items-center"><span class="w-3 h-3 bg-red-500 rounded-full mr-2"></span> Vertices</div>
-                <div class="flex items-center"><i class="fas fa-mouse-pointer mr-2"></i> Left Click to Add</div>
-            </div>
-
-        </div>
-    </div>
-
-    <!-- Notification Toast -->
-    <div id="toast" class="fixed bottom-6 right-6 px-6 py-4 rounded-lg shadow-2xl transform translate-y-24 opacity-0 transition-all duration-300 z-50 flex items-center">
-        <i id="toast-icon" class="fas fa-check-circle text-xl mr-3"></i>
-        <div>
-            <h4 id="toast-title" class="font-bold text-sm">Success</h4>
-            <p id="toast-msg" class="text-sm opacity-90">Action completed.</p>
         </div>
     </div>
 
     <script>
-        // --- Variables ---
         const canvas = document.getElementById('roi-canvas');
         const ctx = canvas.getContext('2d');
         const imgElement = document.getElementById('snapshot-img');
         const loader = document.getElementById('loading-overlay');
-        const pointCountDisplay = document.getElementById('point-count');
-        const coordDisplay = document.getElementById('coord-display');
+        const loadingText = document.getElementById('loading-text');
         let points = [];
 
-        // --- Initialization ---
         window.onload = function() {
-            // Get current RTSP
-            fetch('/get_rtsp').then(r => r.text()).then(url => {
-                document.getElementById('rtspUrl').value = url;
-            });
+            // 1. Get RTSP URL
+            fetch('/get_rtsp').then(r => r.text()).then(url => { document.getElementById('rtspUrl').value = url; });
+            
+            // 2. Start Polling Status
+            setInterval(checkStatus, 2000);
+            checkStatus();
+            
+            // 3. Try to load image
             requestSnapshot();
         };
 
-        // --- Image Handling ---
+        function checkStatus() {
+            fetch('/app_status')
+                .then(r => r.json())
+                .then(data => {
+                    const statusText = document.getElementById('status-text');
+                    const statusDot = document.getElementById('status-dot');
+                    const statusPing = document.getElementById('status-ping');
+                    
+                    if (data.running) {
+                        statusText.innerText = "ONLINE";
+                        statusText.className = "text-xs font-mono text-green-400";
+                        statusDot.className = "relative inline-flex rounded-full h-3 w-3 bg-green-500";
+                        statusPing.className = "animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75";
+                    } else {
+                        statusText.innerText = "OFFLINE";
+                        statusText.className = "text-xs font-mono text-red-400";
+                        statusDot.className = "relative inline-flex rounded-full h-3 w-3 bg-red-500";
+                        statusPing.className = "hidden"; // Stop animating if dead
+                    }
+                })
+                .catch(() => console.log("Server unreachable"));
+        }
+
         function requestSnapshot() {
             loader.style.display = 'flex';
-            // Cache bust to force reload
+            loadingText.innerText = "Requesting Snapshot...";
             imgElement.src = "/request_snapshot?" + new Date().getTime();
         }
 
-        imgElement.onload = function() {
-            loader.style.display = 'none';
-            draw();
+        imgElement.onload = function() { loader.style.display = 'none'; draw(); };
+        imgElement.onerror = function() { 
+            // If offline, don't retry loop forever, just show error
+            loadingText.innerText = "Snapshot Failed (App Offline?)";
         };
 
-        imgElement.onerror = function() {
-            // If image fails (C++ hasn't written it yet), retry in 1s
-            setTimeout(() => {
-                imgElement.src = "/snapshot_image?" + new Date().getTime();
-            }, 1000);
-        };
-
-        // --- Canvas Interaction ---
-        canvas.addEventListener('mousemove', (e) => {
-            const rect = canvas.getBoundingClientRect();
-            const x = Math.round((e.clientX - rect.left));
-            const y = Math.round((e.clientY - rect.top));
-            coordDisplay.innerText = `${x}, ${y}`;
-        });
-
+        // Canvas Logic
         canvas.addEventListener('mousedown', (e) => {
             const rect = canvas.getBoundingClientRect();
-            // Calculate scale in case displayed size != actual 640x480
-            const scaleX = canvas.width / rect.width;
-            const scaleY = canvas.height / rect.height;
-            
-            const x = Math.round((e.clientX - rect.left) * scaleX);
-            const y = Math.round((e.clientY - rect.top) * scaleY);
-            
+            const x = Math.round((e.clientX - rect.left) * (canvas.width / rect.width));
+            const y = Math.round((e.clientY - rect.top) * (canvas.height / rect.height));
             points.push({x, y});
-            pointCountDisplay.innerText = points.length;
+            document.getElementById('point-count').innerText = points.length;
             draw();
         });
 
-        // --- Drawing Logic ---
         function draw() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            
-            // Draw Polygon Fill
             if (points.length > 0) {
                 ctx.beginPath();
                 ctx.moveTo(points[0].x, points[0].y);
-                for (let i = 1; i < points.length; i++) {
-                    ctx.lineTo(points[i].x, points[i].y);
-                }
+                for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
                 if (points.length > 2) {
                     ctx.closePath();
-                    ctx.fillStyle = 'rgba(59, 130, 246, 0.2)'; // Blue tint
+                    ctx.fillStyle = 'rgba(59, 130, 246, 0.2)';
                     ctx.fill();
                 }
-                ctx.strokeStyle = '#3b82f6'; // Blue Line
-                ctx.lineWidth = 2;
-                ctx.stroke();
+                ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 2; ctx.stroke();
             }
-
-            // Draw Vertices
             points.forEach(p => {
-                ctx.beginPath();
-                ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
-                ctx.fillStyle = '#ef4444'; // Red Dot
-                ctx.fill();
-                ctx.strokeStyle = '#fff';
-                ctx.lineWidth = 1;
-                ctx.stroke();
+                ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+                ctx.fillStyle = '#ef4444'; ctx.fill();
             });
         }
 
-        // --- Actions ---
-        function clearPoly() {
-            points = [];
-            pointCountDisplay.innerText = 0;
-            draw();
-        }
+        function clearPoly() { points = []; document.getElementById('point-count').innerText = 0; draw(); }
 
         function savePoly() {
-            if (points.length < 3) {
-                showToast('Warning', 'Please draw at least 3 points', 'warning');
-                return;
-            }
-            
+            if (points.length < 3) return alert("Need 3+ points");
             const data = points.map(p => `${p.x} ${p.y}`).join("\n");
-            
-            fetch('/save_roi', {
-                method: 'POST',
-                headers: {'Content-Type': 'text/plain'},
-                body: data
-            })
-            .then(r => {
-                if(r.ok) showToast('Success', 'ROI Zone Updated');
-                else showToast('Error', 'Failed to save config', 'error');
-            })
-            .catch(() => showToast('Error', 'Network connection failed', 'error'));
+            fetch('/save_roi', { method: 'POST', headers: {'Content-Type': 'text/plain'}, body: data })
+            .then(r => r.ok ? alert("ROI Updated!") : alert("Error saving"));
         }
 
         function saveRtsp() {
             const url = document.getElementById('rtspUrl').value;
-            if(url.length < 5) {
-                showToast('Error', 'Invalid RTSP URL', 'error');
-                return;
-            }
-            
-            fetch('/save_rtsp', { method: 'POST', body: url })
-                .then(r => {
-                    if(r.ok) {
-                        showToast('Success', 'RTSP URL Saved. Restarting...');
-                        setTimeout(restartApp, 1000);
-                    } else showToast('Error', 'Failed to save URL', 'error');
-                });
+            fetch('/save_rtsp', { method: 'POST', body: url }).then(() => controlApp('restart'));
         }
 
-        function restartApp() {
-            showToast('System', 'Sending restart command...', 'info');
-            fetch('/restart_app', { method: 'POST' })
-                .then(() => {
-                    setTimeout(() => {
-                        location.reload();
-                    }, 5000);
-                })
-                .catch(() => showToast('Error', 'Failed to restart', 'error'));
-        }
-
-        // --- Toast Notification System ---
-        function showToast(title, message, type = 'success') {
-            const toast = document.getElementById('toast');
-            const toastTitle = document.getElementById('toast-title');
-            const toastMsg = document.getElementById('toast-msg');
-            const toastIcon = document.getElementById('toast-icon');
-
-            toastTitle.innerText = title;
-            toastMsg.innerText = message;
-
-            // Styles
-            toast.className = `fixed bottom-6 right-6 px-6 py-4 rounded-lg shadow-2xl transform transition-all duration-300 z-50 flex items-center border-l-4 text-white`;
-            
-            if (type === 'success') {
-                toast.classList.add('bg-gray-800', 'border-green-500');
-                toastIcon.className = "fas fa-check-circle text-xl mr-3 text-green-400";
-            } else if (type === 'error') {
-                toast.classList.add('bg-gray-800', 'border-red-500');
-                toastIcon.className = "fas fa-exclamation-circle text-xl mr-3 text-red-400";
-            } else if (type === 'warning') {
-                toast.classList.add('bg-gray-800', 'border-yellow-500');
-                toastIcon.className = "fas fa-exclamation-triangle text-xl mr-3 text-yellow-400";
-            } else {
-                toast.classList.add('bg-gray-800', 'border-blue-500');
-                toastIcon.className = "fas fa-info-circle text-xl mr-3 text-blue-400";
-            }
-
-            // Show
-            toast.classList.remove('translate-y-24', 'opacity-0');
-            
-            // Hide after 3s
-            setTimeout(() => {
-                toast.classList.add('translate-y-24', 'opacity-0');
-            }, 3000);
+        function controlApp(action) {
+            fetch('/control_app', { method: 'POST', headers: {'Content-Type': 'text/plain'}, body: action });
+            // Immediate status check will likely show offline, then online later
+            setTimeout(checkStatus, 1000);
         }
     </script>
 </body>

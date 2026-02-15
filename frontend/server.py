@@ -3,6 +3,7 @@ import socketserver
 import os
 import time
 import subprocess
+import json
 
 PORT = 8080
 # File paths
@@ -10,12 +11,14 @@ ROI_FILE = "/tmp/roi_config.txt"
 TRIGGER_FILE = "/tmp/req_snapshot"
 PREVIEW_FILE = "/tmp/preview.jpg"
 RTSP_CONFIG_FILE = "rtsp_url.conf"
+APP_LOG_FILE = "/tmp/app_debug.log"
 
-# App Path (Relative to server.py)
-APP_DIR = "../luckfox_pico_rtsp_yolov5_demo"
-APP_BIN = "./luckfox_pico_rtsp_yolov5"
+# --- CONFIGURATION ---
+# IMPORTANT: Use absolute path if possible
+APP_DIR = "/opt/luckfox_pico_rtsp_yolov5_demo"
+APP_BIN_NAME = "luckfox_pico_rtsp_yolov5"
+APP_CMD = f"./{APP_BIN_NAME}"
 
-# Ensure we can find index.html regardless of where python is run from
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 INDEX_FILE = os.path.join(BASE_DIR, "index.html")
 
@@ -30,28 +33,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             with open(INDEX_FILE, 'rb') as f: self.wfile.write(f.read())
             
+        elif self.path == '/app_status':
+            # Check if process is running using pidof
+            is_running = os.system(f"pidof {APP_BIN_NAME} > /dev/null") == 0
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({"running": is_running}).encode())
+
         elif self.path.startswith('/request_snapshot'):
-            # Create trigger file
             open(TRIGGER_FILE, 'a').close()
-            # Wait loop
-            found = False
-            for _ in range(20): # 2 seconds max
+            for _ in range(20):
                 if os.path.exists(PREVIEW_FILE) and os.path.getmtime(PREVIEW_FILE) > time.time() - 2:
-                    found = True
                     break
                 time.sleep(0.1)
             
             if os.path.exists(PREVIEW_FILE):
                 self.send_response(200)
                 self.send_header('Content-type', 'image/jpeg')
-                self.send_header('Cache-Control', 'no-cache')
                 self.end_headers()
                 with open(PREVIEW_FILE, 'rb') as f: self.wfile.write(f.read())
             else:
                 self.send_error(404)
 
         elif self.path.startswith('/snapshot_image'):
-            # Fallback direct access
             if os.path.exists(PREVIEW_FILE):
                 self.send_response(200)
                 self.send_header('Content-type', 'image/jpeg')
@@ -79,35 +85,45 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with open(RTSP_CONFIG_FILE, 'wb') as f: f.write(self.rfile.read(len))
             self.send_response(200); self.end_headers()
 
-        elif self.path == '/restart_app':
+        elif self.path == '/control_app':
+            len = int(self.headers['Content-Length'])
+            action = self.rfile.read(len).decode('utf-8').strip()
             self.send_response(200); self.end_headers()
             
-            def restart_logic():
-                print("[Server] Restarting Main Application...")
-                # 1. Kill (using binary name)
-                os.system(f"killall -9 {os.path.basename(APP_BIN)}")
-                time.sleep(1)
+            def manage_app():
+                print(f"[Server] Action: {action}")
                 
-                # 2. Start
-                try:
-                    # We switch CWD so the app finds its models/libs correctly
-                    subprocess.Popen([APP_BIN], 
-                                     cwd=APP_DIR,
-                                     stdout=subprocess.DEVNULL, 
-                                     stderr=subprocess.DEVNULL, 
-                                     start_new_session=True)
-                    print("[Server] App launched successfully")
-                except Exception as e:
-                    print(f"[Server] Failed to launch app: {e}")
+                if action in ['stop', 'restart']:
+                    os.system(f"killall -9 {APP_BIN_NAME}")
+                    time.sleep(1)
+
+                if action in ['start', 'restart']:
+                    try:
+                        # CRITICAL FIX: Pass environment variables so libs load correctly
+                        my_env = os.environ.copy()
+                        # Add library paths if needed (usually handled by system, but good for debug)
+                        # my_env["LD_LIBRARY_PATH"] = "/oem/usr/lib:/usr/lib" 
+
+                        with open(APP_LOG_FILE, "a") as log:
+                            log.write(f"\n--- Starting App at {time.ctime()} ---\n")
+                            subprocess.Popen([APP_CMD], 
+                                             cwd=APP_DIR,
+                                             stdout=log, 
+                                             stderr=log, 
+                                             env=my_env, # <--- Fix: Pass Environment
+                                             start_new_session=True)
+                        print("[Server] App started")
+                    except Exception as e:
+                        print(f"[Server] Error starting app: {e}")
 
             import threading
-            threading.Thread(target=restart_logic).start()
+            threading.Thread(target=manage_app).start()
 
 if __name__ == "__main__":
     socketserver.TCPServer.allow_reuse_address = True
     try:
         with socketserver.TCPServer(("", PORT), Handler) as httpd:
-            print(f"Serving UI at http://0.0.0.0:{PORT}")
+            print(f"Server started on port {PORT}")
             httpd.serve_forever()
     except KeyboardInterrupt:
         pass
