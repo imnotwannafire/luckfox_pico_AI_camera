@@ -50,7 +50,8 @@ extern "C" {
 #define RK_ALIGN_2(x)  (((x) + 1) & (~1))
 #define MODEL_WIDTH  640
 #define MODEL_HEIGHT 640
-#define RTSP_INPUT_URL "rtsp://220.254.72.200/Src/MediaInput/h264/stream_1"
+#define DEFAULT_RTSP_URL "rtsp://220.254.72.200/Src/MediaInput/h264/stream_1"
+const char* CONFIG_RTSP_FILE = "rtsp_url.conf";
 
 // ============================================================================
 // Global state
@@ -83,10 +84,12 @@ private:
     time_t last_check = 0;
 
 public:
+    ROICounter() { is_active = false; }
+
     void reload_config() {
         struct timeval tv;
         gettimeofday(&tv, NULL);
-        if (tv.tv_sec - last_check < 3) return; // Check every 3s
+        if (tv.tv_sec - last_check < 2) return;
         last_check = tv.tv_sec;
 
         std::ifstream infile(config_file);
@@ -94,17 +97,20 @@ public:
             std::vector<cv::Point> new_poly;
             int x, y;
             while (infile >> x >> y) {
-                if(x >= 0 && x <= 640 && y >= 0 && y <= 480)
+                if(x >= 0 && x < MODEL_WIDTH && y >= 0 && y < MODEL_HEIGHT)
                     new_poly.push_back(cv::Point(x, y));
             }
             if (new_poly.size() >= 3) {
                 if (new_poly != polygon) {
                     polygon = new_poly;
                     is_active = true;
-                    // Reset counts on config change
-                    count_in = 0; count_out = 0; track_state.clear();
-                    printf("[ROI] New polygon loaded\n");
+                    count_in = 0; count_out = 0; track_state.clear(); 
+                    printf("[ROI] Config Loaded: %zu points\n", polygon.size());
                 }
+            } else if (new_poly.empty() && is_active) {
+                polygon.clear();
+                is_active = false;
+                printf("[ROI] Config Cleared\n");
             }
         }
     }
@@ -112,9 +118,9 @@ public:
     void update(const std::vector<STrack>& tracks) {
         if (!is_active || polygon.empty()) return;
 
-        // Cleanup dead tracks
         std::set<int> current_ids;
         for (const auto& t : tracks) current_ids.insert(t.track_id);
+        
         for (auto it = track_state.begin(); it != track_state.end();) {
             if (current_ids.find(it->first) == current_ids.end()) it = track_state.erase(it);
             else ++it;
@@ -134,7 +140,6 @@ public:
         }
     }
 
-    // Draw White Lines directly to Y-Plane (Fast)
     void draw(unsigned char* yuv_data, int width, int height, int vir_width) {
         if (!is_active || polygon.empty()) return;
 
@@ -144,10 +149,10 @@ public:
 
         char text[64];
         snprintf(text, sizeof(text), "In: %d | Out: %d", count_in, count_out);
-        cv::putText(mask, text, cv::Point(20, 40), cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(255), 2);
+        cv::putText(mask, text, cv::Point(20, 40), cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(1), 4); // Outline
+        cv::putText(mask, text, cv::Point(20, 40), cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(255), 2); // Text
 
-        // Scan only relevant area
-        cv::Rect b = cv::boundingRect(polygon) | cv::Rect(0,0, 300, 50); 
+        cv::Rect b = cv::boundingRect(polygon) | cv::Rect(0, 0, 350, 60);
         b.x = std::max(0, b.x); b.y = std::max(0, b.y);
         if(b.x + b.width > width) b.width = width - b.x;
         if(b.y + b.height > height) b.height = height - b.y;
@@ -157,13 +162,33 @@ public:
             const uint8_t* m_row = mask.ptr<uint8_t>(r);
             uint8_t* y_row = y_ptr + r * vir_width;
             for (int c = b.x; c < b.x + b.width; c++) {
-                if (m_row[c] > 0) y_row[c] = 255;
+                uint8_t pixel = m_row[c];
+                if (pixel == 255) y_row[c] = 255;
+                else if (pixel == 1) y_row[c] = 10;
             }
         }
     }
 };
 
 static ROICounter g_roi;
+
+void get_rtsp_url(char* buffer, size_t size) {
+    FILE* f = fopen(CONFIG_RTSP_FILE, "r");
+    if (f) {
+        if (fgets(buffer, size, f)) {
+            buffer[strcspn(buffer, "\n")] = 0;
+            buffer[strcspn(buffer, "\r")] = 0;
+            if (strlen(buffer) > 5) {
+                printf("[Config] Loaded RTSP URL: %s\n", buffer);
+                fclose(f);
+                return;
+            }
+        }
+        fclose(f);
+    }
+    strncpy(buffer, DEFAULT_RTSP_URL, size);
+    printf("[Config] Using Default RTSP URL: %s\n", buffer);
+}
 
 // ============================================================================
 // RGA state
@@ -191,6 +216,7 @@ bool init_rga_acceleration(int width, int height, int vir_width, int vir_height)
 
     g_scaled_w = RK_ALIGN_4((int)((float)width * g_scale));
     g_scaled_h = RK_ALIGN_4((int)((float)height * g_scale));
+    
     g_scaled_w = std::min(g_scaled_w, MODEL_WIDTH);
     g_scaled_h = std::min(g_scaled_h, MODEL_HEIGHT);
 
@@ -242,7 +268,6 @@ uint64_t rga_preprocess(MB_BLK src_blk, int src_width, int src_height,
     rga_buffer_t dst_buf = wrapbuffer_fd_t(dst_fd, g_scaled_w, g_scaled_h, 
                                            MODEL_WIDTH, g_scaled_h, RK_FORMAT_RGB_888);
 
-    // Ensure Full Range Color for AI Accuracy
     IM_STATUS ret = imcvtcolor(src_buf, dst_buf, src_buf.format, dst_buf.format, IM_YUV_TO_RGB_BT601_FULL);
     
     if (ret != IM_STATUS_SUCCESS) return 0;
@@ -288,7 +313,7 @@ uint64_t get_time_us() {
 }
 
 // ============================================================================
-// OSD: SAFE DRAWING
+// OSD Drawing
 // ============================================================================
 void draw_text_labels_hybrid(unsigned char *yuv_data, int width, int height,
                              int vir_width, int x, int y, const char *text) {
@@ -372,6 +397,9 @@ void draw_bbox_i420_correct(unsigned char *data, int width, int height, int vir_
     fill_chroma(v_plane, V_VAL);
 }
 
+// ============================================================================
+// VENC Thread
+// ============================================================================
 static void *GetMediaBuffer(void *arg) {
     (void)arg;
     VENC_STREAM_S stFrame;
@@ -416,6 +444,9 @@ int main(int argc, char *argv[]) {
     system("RkLunch-stop.sh");
     signal(SIGINT, signal_handler);
     
+    char rtsp_url[256];
+    get_rtsp_url(rtsp_url, sizeof(rtsp_url));
+    
     const char *model_path = "./model/yolov5.rknn";
     unsigned char *temp_i420_buffer = NULL;
     VIDEO_FRAME_INFO_S h264_frame;
@@ -439,7 +470,10 @@ int main(int argc, char *argv[]) {
     avformat_network_init();
     av_dict_set(&opts, "rtsp_transport", "tcp", 0);
     av_dict_set(&opts, "max_delay", "500000", 0);
-    if (avformat_open_input(&fmt_ctx, RTSP_INPUT_URL, NULL, &opts) != 0) return -1;
+    if (avformat_open_input(&fmt_ctx, rtsp_url, NULL, &opts) != 0) {
+        printf("ERROR: Could not open RTSP stream: %s\n", rtsp_url);
+        return -1;
+    }
     if (avformat_find_stream_info(fmt_ctx, NULL) < 0) return -1;
     
     for (unsigned int i = 0; i < fmt_ctx->nb_streams; i++) {
@@ -472,7 +506,6 @@ int main(int argc, char *argv[]) {
     RK_MPI_SYS_Init();
     venc_init(0, width, height, RK_VIDEO_ID_AVC);
 
-    // Ping-Pong Pool (6 frames for safety)
     MB_POOL_CONFIG_S PoolCfg;
     memset(&PoolCfg, 0, sizeof(PoolCfg));
     PoolCfg.u64MBSize = vir_width * vir_height * 3 / 2;
@@ -508,23 +541,23 @@ int main(int argc, char *argv[]) {
     uint64_t start_time = get_time_us();
     uint64_t last_fps_time = start_time;
     
-    printf("--- Running (Robust Production) ---\n");
+    // Initial Config Load
+    g_roi.reload_config();
+
+    printf("--- Running (Robust: Buffered I420 + RGA + PingPong) ---\n");
 
     while (g_running && av_read_frame(fmt_ctx, pkt) >= 0) {
         if (pkt->stream_index == video_idx) {
             avcodec_send_packet(dec_ctx, pkt);
             while (avcodec_receive_frame(dec_ctx, avframe) == 0) {
                 
-                // 1. Get Fresh DMA Buffer
                 MB_BLK mb = RK_MPI_MB_GetMB(src_Pool, PoolCfg.u64MBSize, RK_FALSE); 
                 if (mb == MB_INVALID_HANDLE) { usleep(1000); continue; }
                 unsigned char* data = (unsigned char*)RK_MPI_MB_Handle2VirAddr(mb);
                 
-                // 2. Decode to Cached RAM (High Accuracy)
                 sws_scale(sws_ctx, (const uint8_t * const*)avframe->data, avframe->linesize,
                           0, dec_ctx->height, i420_frame->data, i420_frame->linesize);
 
-                // 3. Copy to DMA (Robust transfer)
                 for (int i = 0; i < height; i++)
                     memcpy(data + i * vir_width, i420_frame->data[0] + i * i420_frame->linesize[0], width);
                 
@@ -536,7 +569,7 @@ int main(int argc, char *argv[]) {
                 for (int i = 0; i < height / 2; i++)
                     memcpy(data + v_off + i * (vir_width/2), i420_frame->data[2] + i * i420_frame->linesize[2], width/2);
 
-                // --- SNAPSHOT LOGIC FOR CONFIG ---
+                // Check Snapshot Trigger
                 if (access("/tmp/req_snapshot", F_OK) == 0) {
                     cv::Mat snap_i420(height + height/2, width, CV_8UC1, i420_frame->data[0]);
                     cv::Mat snap_bgr;
@@ -552,7 +585,6 @@ int main(int argc, char *argv[]) {
 
                 if (run_inference) {
                     uint64_t ai_start = get_time_us();
-                    
                     preprocess_time = rga_preprocess(mb, width, height, vir_width, vir_height, 
                                       (unsigned char*)rknn_app_ctx.input_mems[0]->virt_addr);
                     used_rga = (preprocess_time > 0);
@@ -587,7 +619,6 @@ int main(int argc, char *argv[]) {
                     ai_time = get_time_us() - ai_start;
                 }
 
-                // 5. OSD & ROI
                 uint64_t osd_start = get_time_us();
                 g_roi.draw(data, width, height, vir_width);
                 
@@ -602,7 +633,6 @@ int main(int argc, char *argv[]) {
                 }
                 uint64_t osd_time = get_time_us() - osd_start;
 
-                // 6. Flush & Send
                 RK_MPI_SYS_MmzFlushCache(mb, RK_FALSE);
                 h264_frame.stVFrame.pMbBlk = mb; 
                 h264_frame.stVFrame.u32TimeRef = H264_TimeRef++;
@@ -610,7 +640,6 @@ int main(int argc, char *argv[]) {
                 RK_MPI_VENC_SendFrame(0, &h264_frame, 1000);
                 RK_MPI_MB_ReleaseMB(mb); 
 
-                // 7. Stats
                 frame_count++;
                 fps_frame_count++;
                 uint64_t now = get_time_us();
